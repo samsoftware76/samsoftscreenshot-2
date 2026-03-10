@@ -7,6 +7,10 @@ import ScreenshotCapture from '@/components/ScreenshotCapture';
 import WebcamCapture from '@/components/WebcamCapture';
 import type { AnalysisMode, MediaFile, MessagePayload } from '@/lib/chat';
 import { downloadAsTxt, downloadAsPdf, downloadAsDocx, downloadAsCsv, downloadAsExcel } from '@/lib/export';
+import { supabase } from '@/lib/supabase';
+import type { Session } from '@supabase/supabase-js';
+import AuthUI from '@/components/Auth';
+import PaymentUI from '@/components/PaymentUI';
 
 const MessageActions = ({ text }: { text: string }) => {
   const [copied, setCopied] = useState(false);
@@ -78,16 +82,58 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showWelcome, setShowWelcome] = useState(true);
   const [isOnline, setIsOnline] = useState(true);
+  const [session, setSession] = useState<Session | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [showPayment, setShowPayment] = useState(false);
 
-  // Persistence: Load from localStorage
+  // Auth Listener
   useEffect(() => {
-    const savedMessages = localStorage.getItem('chat_history');
-    const savedMode = localStorage.getItem('chat_mode');
-    if (savedMessages) setMessages(JSON.parse(savedMessages));
-    if (savedMode) setMode(savedMode as AnalysisMode);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setIsAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setIsAuthLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Persistence: Save to localStorage
+  // Sync Supabase History if logged in
+  useEffect(() => {
+    if (session) {
+      const loadSupabaseHistory = async () => {
+        const { data, error } = await supabase
+          .from('chat_messages')
+          .select('*')
+          .order('created_at', { ascending: true })
+          .limit(100);
+
+        if (data && data.length > 0) {
+          const formattedMessages: MessagePayload[] = data.map(m => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            text: m.content
+          }));
+          setMessages(formattedMessages);
+        }
+      };
+      loadSupabaseHistory();
+    }
+  }, [session]);
+
+  // Persistence: Load from localStorage (as fallback or for guests)
+  useEffect(() => {
+    if (!session) {
+      const savedMessages = localStorage.getItem('chat_history');
+      const savedMode = localStorage.getItem('chat_mode');
+      if (savedMessages) setMessages(JSON.parse(savedMessages));
+      if (savedMode) setMode(savedMode as AnalysisMode);
+    }
+  }, [session]);
+
+  // Persistence: Save to localStorage (guest/redundancy)
   useEffect(() => {
     if (messages.length > 0) {
       localStorage.setItem('chat_history', JSON.stringify(messages));
@@ -192,6 +238,15 @@ export default function Home() {
     setError(null);
 
     try {
+      // Save user message to database if logged in
+      if (session) {
+        supabase.from('chat_messages').insert({
+          user_id: session.user.id,
+          role: 'user',
+          content: userMessage.text
+        }).then();
+      }
+
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,7 +259,17 @@ export default function Home() {
         throw new Error(result.error || result.message || 'Error communicating with AI');
       }
 
-      setMessages(prev => [...prev, { role: 'model', text: result.text }]);
+      const aiText = result.text;
+      setMessages(prev => [...prev, { role: 'model', text: aiText }]);
+
+      // Save ai message to database if logged in
+      if (session) {
+        supabase.from('chat_messages').insert({
+          user_id: session.user.id,
+          role: 'assistant',
+          content: aiText
+        }).then();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error occurred';
       setError(message);
@@ -220,6 +285,34 @@ export default function Home() {
       handleSend();
     }
   };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    resetApp();
+  };
+
+  if (isAuthLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A]">
+        <div className="w-16 h-16 bg-black rounded-full flex items-center justify-center animate-pulse mb-6">
+          <img src="/logo.svg" alt="Logo" className="w-10 h-10" />
+        </div>
+        <div className="flex gap-1.5">
+          <div className="w-2 h-2 bg-black dark:bg-white rounded-full animate-bounce [animation-delay:-0.3s]" />
+          <div className="w-2 h-2 bg-black dark:bg-white rounded-full animate-bounce [animation-delay:-0.15s]" />
+          <div className="w-2 h-2 bg-black dark:bg-white rounded-full animate-bounce" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] flex items-center justify-center p-4">
+        <AuthUI />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] font-sans transition-colors duration-300">
@@ -256,15 +349,44 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
-          <div className="flex flex-col items-end mr-1 sm:mr-2 hidden sm:flex">
-            <span className="text-[9px] sm:text-[10px] font-bold text-black dark:text-gray-400">SUPPORT</span>
-            <span className="text-[10px] sm:text-[11px] font-mono text-gray-500 truncate max-w-[100px] sm:max-w-none">+256 783 647260</span>
+          <div className="hidden md:flex flex-col items-end mr-1 sm:mr-2">
+            <span className="text-[9px] font-black text-black dark:text-gray-400 uppercase tracking-widest">{session.user.email?.split('@')[0]}</span>
+            <button
+              onClick={handleSignOut}
+              className="text-[10px] font-bold text-red-500 hover:text-red-600 transition-colors uppercase tracking-tight"
+            >
+              Sign Out
+            </button>
           </div>
-          <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gray-100 dark:bg-white/10 flex items-center justify-center border border-black/5 dark:border-white/10 flex-shrink-0">
-            <img src="/logo.svg" alt="User" className="w-4 h-4 sm:w-5 sm:h-5 opacity-50" />
+          <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-full bg-black flex items-center justify-center border border-white/10 flex-shrink-0 shadow-lg">
+            <span className="text-white text-xs font-black uppercase">
+              {session.user.email?.[0] || 'U'}
+            </span>
           </div>
+          <button
+            onClick={() => setShowPayment(true)}
+            className="px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-[0_0_15px_rgba(234,179,8,0.3)] transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
+          >
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+            UPGRADE
+          </button>
         </div>
       </header >
+
+      {/* Payment Modal */}
+      {showPayment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="relative w-full max-w-md animate-in zoom-in-95 duration-300">
+            <button
+              onClick={() => setShowPayment(false)}
+              className="absolute -top-12 right-0 p-2 text-white hover:text-gray-300 transition-colors"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+            <PaymentUI session={session} />
+          </div>
+        </div>
+      )}
 
       {/* Main Chat Area */}
       <main className="flex-1 overflow-y-auto px-4 md:px-0 py-8 space-y-8 scroll-smooth" >
