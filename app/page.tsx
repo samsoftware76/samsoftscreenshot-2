@@ -247,19 +247,15 @@ export default function Home() {
         }).then();
       }
 
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newHistory, mode }),
+      // CALL SUPABASE EDGE FUNCTION DIRECTLY (THE LOVABLE WAY)
+      const { data, error: fnError } = await supabase.functions.invoke('chat', {
+        body: { messages: newHistory, mode },
       });
 
-      const result = await response.json();
+      if (fnError) throw fnError;
+      if (!data?.text) throw new Error('No response from AI');
 
-      if (!response.ok) {
-        throw new Error(result.error || result.message || 'Error communicating with AI');
-      }
-
-      const aiText = result.text;
+      const aiText = data.text;
       setMessages(prev => [...prev, { role: 'model', text: aiText }]);
 
       // Save ai message to database if logged in

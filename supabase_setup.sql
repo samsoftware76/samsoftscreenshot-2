@@ -33,7 +33,8 @@ CREATE INDEX IF NOT EXISTS chat_messages_user_id_idx ON public.chat_messages (us
 GRANT ALL ON public.chat_messages TO authenticated;
 GRANT ALL ON public.chat_messages TO service_role;
 
--- NOTE: Ensure your Edge Functions (chat, pesapal) have their environment variables set in the Supabase Dashboard:
+-- NOTE: Ensure your Edge Functions (chat, pesapal) have their environment variables set ONLY in the Supabase Dashboard:
+-- These are NOT needed in your local code or .env file.
 -- LOVABLE_API_KEY
 -- PESAPAL_CONSUMER_KEY
 -- PESAPAL_CONSUMER_SECRET
