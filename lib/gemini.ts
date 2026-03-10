@@ -28,8 +28,8 @@ export type AnalysisMode = 'code' | 'essay';
  * @returns Promise with challenge analysis
  */
 export async function analyzeChallenge(
-    imageBase64: string,
-    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif',
+    imageBase64: string | undefined,
+    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | undefined,
     instructions?: string
 ): Promise<ChallengeAnalysis> {
     try {
@@ -41,13 +41,13 @@ export async function analyzeChallenge(
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: [
-                {
+                ...(imageBase64 && imageMediaType ? [{
                     inlineData: {
                         data: imageBase64,
                         mimeType: imageMediaType,
                     },
-                },
-                `Analyze this screenshot of a coding challenge or programming problem. Please:
+                }] : []),
+                `Analyze this coding challenge or programming problem. Please:
 
 1. Identify and describe the challenge/problem shown in the image
 2. Provide the COMPLETE WORKING CODE SOLUTION (not just steps!)
@@ -72,7 +72,7 @@ Important:
 - In the "code" field, use \\n for newlines, \\t for tabs (proper JSON escaping)
 - Return ONLY valid JSON with properly escaped strings, no markdown formatting or extra text.
 - Make sure all string values are properly escaped for JSON (newlines as \\n, quotes as \\", etc.)`,
-                ...(instructions ? [instructions] : []),
+                ...(instructions ? [`\n\nADDITIONAL USER INSTRUCTIONS/CONTEXT:\n${instructions}`] : []),
             ],
             config: {
                 responseMimeType: "application/json",
@@ -147,8 +147,8 @@ Return only the hint text, no formatting.`
  * Analyze a screenshot specifically for essays/text with anti-plagiarism measures
  */
 export async function analyzeEssayChallenge(
-    imageBase64: string,
-    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif',
+    imageBase64: string | undefined,
+    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | undefined,
     instructions?: string
 ): Promise<ChallengeAnalysis> {
     try {
@@ -157,15 +157,15 @@ export async function analyzeEssayChallenge(
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: [
-                {
+                ...(imageBase64 && imageMediaType ? [{
                     inlineData: {
                         data: imageBase64,
                         mimeType: imageMediaType,
                     },
-                },
-                `Analyze this screenshot of an essay prompt, writing assignment, or short-answer question. 
+                }] : []),
+                `Analyze this essay prompt, writing assignment, or short-answer question. 
 
-Write an original, thoughtful response to the prompt shown.
+Write an original, thoughtful response to the prompt.
 
 CRUCIAL ANTI-PLAGIARISM & UNDETECTABLE AI INSTRUCTIONS:
 1. DO NOT use typical AI vocabulary (e.g., "delve," "tapestry," "furthermore," "in conclusion," "crucial," "dynamic," "multifaceted").
@@ -190,7 +190,7 @@ Format your response as JSON with this structure:
 Important: 
 - The "textOutput" field must contain the COMPLETE written response, structured with \\n\\n for paragraphs.
 - Return ONLY valid JSON with properly escaped strings, no markdown formatting or extra text.`,
-                ...(instructions ? [instructions] : []),
+                ...(instructions ? [`\n\nADDITIONAL USER INSTRUCTIONS/CONTEXT:\n${instructions}`] : []),
             ],
             config: {
                 responseMimeType: "application/json",

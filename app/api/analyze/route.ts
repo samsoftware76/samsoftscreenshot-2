@@ -5,8 +5,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 interface AnalyzeRequest {
-  image: string; // base64 encoded image
-  mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+  image?: string; // base64 encoded image
+  mediaType?: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
   mode?: AnalysisMode;
   instructions?: string;
 }
@@ -31,61 +31,55 @@ export async function POST(request: NextRequest) {
     const body: AnalyzeRequest = await request.json();
 
     // Validate request
-    if (!body.image) {
+    if (!body.image && !body.instructions) {
       return NextResponse.json(
-        { error: 'Missing required field: image' },
+        { error: 'Missing required fields: please provide an image or instructions' },
         { status: 400 }
       );
     }
 
-    if (!body.mediaType) {
-      return NextResponse.json(
-        { error: 'Missing required field: mediaType' },
-        { status: 400 }
-      );
-    }
-
-    // Validate media type
-    const validMediaTypes = [
-      'image/png',
-      'image/jpeg',
-      'image/webp',
-      'image/gif',
-    ];
-    if (!validMediaTypes.includes(body.mediaType)) {
-      return NextResponse.json(
-        {
-          error: 'Invalid media type',
-          message: `Media type must be one of: ${validMediaTypes.join(', ')}`,
-        },
-        { status: 400 }
-      );
-    }
-
-    // Validate base64 image data
-    try {
-      // Check if it's valid base64
-      const decoded = Buffer.from(body.image, 'base64');
-      if (decoded.length === 0) {
-        throw new Error('Empty image data');
-      }
-
-      // Check size (max 5MB)
-      const maxSize = 5 * 1024 * 1024; // 5MB
-      if (decoded.length > maxSize) {
+    // Validate image data if present
+    if (body.image && body.mediaType) {
+      const validMediaTypes = [
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+      ];
+      if (!validMediaTypes.includes(body.mediaType)) {
         return NextResponse.json(
           {
-            error: 'Image too large',
-            message: `Image size exceeds maximum of ${maxSize / 1024 / 1024}MB`,
+            error: 'Invalid media type',
+            message: `Media type must be one of: ${validMediaTypes.join(', ')}`,
           },
           { status: 400 }
         );
       }
-    } catch {
-      return NextResponse.json(
-        { error: 'Invalid base64 image data' },
-        { status: 400 }
-      );
+
+      try {
+        // Check if it's valid base64
+        const decoded = Buffer.from(body.image, 'base64');
+        if (decoded.length === 0) {
+          throw new Error('Empty image data');
+        }
+
+        // Check size (max 5MB)
+        const maxSize = 5 * 1024 * 1024; // 5MB
+        if (decoded.length > maxSize) {
+          return NextResponse.json(
+            {
+              error: 'Image too large',
+              message: `Image size exceeds maximum of ${maxSize / 1024 / 1024}MB`,
+            },
+            { status: 400 }
+          );
+        }
+      } catch {
+        return NextResponse.json(
+          { error: 'Invalid base64 image data' },
+          { status: 400 }
+        );
+      }
     }
 
     // Analyze the screenshot
