@@ -6,6 +6,68 @@ import remarkGfm from 'remark-gfm';
 import ScreenshotCapture from '@/components/ScreenshotCapture';
 import WebcamCapture from '@/components/WebcamCapture';
 import type { AnalysisMode, MediaFile, MessagePayload } from '@/lib/chat';
+import { downloadAsTxt, downloadAsPdf, downloadAsDocx, downloadAsCsv, downloadAsExcel } from '@/lib/export';
+
+const MessageActions = ({ text }: { text: string }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+  };
+
+  const btnClass = "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white border border-transparent hover:border-black/5 dark:hover:border-white/5";
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-black/5 dark:border-white/5">
+      <button onClick={handleCopy} className={btnClass}>
+        {copied ? (
+          <>
+            <svg className="w-3 h-3 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+            <span>Copied</span>
+          </>
+        ) : (
+          <>
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" /></svg>
+            <span>Copy</span>
+          </>
+        )}
+      </button>
+
+      <div className="h-4 w-px bg-black/5 dark:bg-white/5 mx-1" />
+
+      <button onClick={() => downloadAsTxt(text, 'software-challenge-solve')} className={btnClass}>
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+        <span>TXT</span>
+      </button>
+
+      <button onClick={() => downloadAsPdf(text, 'software-challenge-solve')} className={btnClass}>
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+        <span>PDF</span>
+      </button>
+
+      <button onClick={() => downloadAsDocx(text, 'software-challenge-solve')} className={btnClass}>
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+        <span>DOCX</span>
+      </button>
+
+      <button onClick={() => downloadAsCsv(text, 'software-challenge-solve')} className={btnClass}>
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+        <span>CSV</span>
+      </button>
+
+      <button onClick={() => downloadAsExcel(text, 'software-challenge-solve')} className={btnClass}>
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        <span>XLSX</span>
+      </button>
+    </div>
+  );
+};
 
 export default function Home() {
   const [messages, setMessages] = useState<MessagePayload[]>([]);
@@ -16,6 +78,22 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showWelcome, setShowWelcome] = useState(true);
   const [isOnline, setIsOnline] = useState(true);
+
+  // Persistence: Load from localStorage
+  useEffect(() => {
+    const savedMessages = localStorage.getItem('chat_history');
+    const savedMode = localStorage.getItem('chat_mode');
+    if (savedMessages) setMessages(JSON.parse(savedMessages));
+    if (savedMode) setMode(savedMode as AnalysisMode);
+  }, []);
+
+  // Persistence: Save to localStorage
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem('chat_history', JSON.stringify(messages));
+    }
+    localStorage.setItem('chat_mode', mode);
+  }, [messages, mode]);
 
   useEffect(() => {
     setIsOnline(window.navigator.onLine);
@@ -36,6 +114,7 @@ export default function Home() {
     setMode('general');
     setError(null);
     setShowWelcome(true);
+    localStorage.removeItem('chat_history');
   };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -231,10 +310,17 @@ export default function Home() {
           {
             messages.map((msg, idx) => (
               <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                <div className={`max-w-[92%] md:max-w-[85%] rounded-3xl p-5 md:p-6 shadow-sm transition-all ${msg.role === 'user'
-                  ? 'bg-[#141413] text-white rounded-br-md'
-                  : 'bg-white dark:bg-white/10 dark:text-gray-200 text-[#141413] border border-black/5 dark:border-white/5 rounded-bl-md'
+                <div className={`max-w-[92%] md:max-w-[85%] rounded-[2rem] p-5 md:p-8 shadow-md transition-all ${msg.role === 'user'
+                  ? 'bg-[#141413] text-white rounded-br-md border border-white/5'
+                  : 'bg-white dark:bg-[#1A1A1A] text-black dark:text-white border border-black/5 dark:border-white/10 rounded-bl-md'
                   }`}>
+
+                  {msg.role === 'model' && (
+                    <div className="flex items-center gap-2 mb-4 opacity-50">
+                      <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                      <span className="text-[9px] font-black uppercase tracking-[0.2em]">Military Grade Output</span>
+                    </div>
+                  )}
 
                   {/* User Attached Files Display */}
                   {msg.files && msg.files.length > 0 && (
@@ -256,11 +342,14 @@ export default function Home() {
 
                   {/* Message Text */}
                   {msg.role === 'model' ? (
-                    <div className="prose prose-neutral dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/90 prose-pre:border prose-pre:border-white/10 prose-code:text-blue-500 dark:prose-code:text-blue-400">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-                    </div>
+                    <>
+                      <div className="prose prose-neutral dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/90 prose-pre:border prose-pre:border-white/10 prose-code:text-blue-500 dark:prose-code:text-blue-400 text-black dark:text-white">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+                      </div>
+                      <MessageActions text={msg.text} />
+                    </>
                   ) : (
-                    <p className="whitespace-pre-wrap text-sm md:text-base font-medium leading-relaxed tracking-tight">{msg.text}</p>
+                    <p className="whitespace-pre-wrap text-sm md:text-base font-medium leading-relaxed tracking-tight text-white">{msg.text}</p>
                   )}
                 </div>
               </div>
