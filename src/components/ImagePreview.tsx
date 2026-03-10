@@ -1,6 +1,6 @@
 'use client';
 
-import Image from 'next/image';
+
 
 interface ImagePreviewProps {
   imageData: string;
@@ -18,13 +18,10 @@ export default function ImagePreview({
   return (
     <div className="space-y-4">
       <div className="relative rounded-lg overflow-hidden border-2 border-gray-200 bg-gray-50">
-        <Image
+        <img
           src={`data:image/png;base64,${imageData}`}
           alt="Screenshot preview"
-          width={800}
-          height={600}
           className="w-full h-auto"
-          priority
         />
       </div>
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '@/src/integrations/supabase/client';
+import { supabase } from '@/integrations/supabase/client';
 import type { Session } from '@supabase/supabase-js';
 
 export default function PaymentUI({ session }: { session: Session }) {
@@ -15,8 +15,10 @@ export default function PaymentUI({ session }: { session: Session }) {
             // 1. Register IPN (In a real app, this might be pre-registered or handled differently)
             const ipnRes = await supabase.functions.invoke('pesapal', {
                 method: 'POST',
-                params: { action: 'register-ipn' },
-                body: { ipn_url: `${window.location.origin}/api/pesapal-ipn` }
+                body: {
+                    action: 'register-ipn',
+                    ipn_url: `${window.location.origin}/api/pesapal-ipn`
+                }
             });
 
             if (ipnRes.error) throw ipnRes.error;
@@ -25,8 +27,8 @@ export default function PaymentUI({ session }: { session: Session }) {
             // 2. Submit Order
             const orderRes = await supabase.functions.invoke('pesapal', {
                 method: 'POST',
-                params: { action: 'submit-order' },
                 body: {
+                    action: 'submit-order',
                     order_id: crypto.randomUUID(),
                     email: session.user.email,
                     ipn_id: ipn_id,
