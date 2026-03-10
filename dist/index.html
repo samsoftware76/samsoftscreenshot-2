@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Google Consent Mode - Aggressive Sequencing for Platform CMPs -->
+  <script>
+    (function () {
+      console.info("🛡️ [Consent] Initializing Google Consent Mode defaults...");
+      window.dataLayer = window.dataLayer || [];
+      function gtag() { dataLayer.push(arguments); }
+      window.gtag = gtag;
+
+      gtag('consent', 'default', {
+        'ad_storage': 'denied',
+        'ad_user_data': 'denied',
+        'ad_personalization': 'denied',
+        'analytics_storage': 'denied',
+        'security_storage': 'granted',
+        'functionality_storage': 'granted',
+        'personalization_storage': 'granted',
+        'wait_for_update': 2000
+      });
+
+      gtag('set', 'ads_data_redaction', true);
+      gtag('js', new Date());
+      console.info("✅ [Consent] Defaults registered with 2000ms wait.");
+    })();
+  </script>
+
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  <title>Software Challenge Solver</title>
+  <script type="module" crossorigin src="/assets/index-B35GwXwd.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-CD6vGYd0.css">
+</head>
+
+<body>
+  <div id="root"></div>
+</body>
+
+</html>
