@@ -5,10 +5,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Google Consent Mode - Aggressive Sequencing for Platform CMPs -->
+  <!-- Google Consent Mode - Aggressive Sequencing V2.2 -->
   <script>
     (function () {
-      console.info("🛡️ [Consent] Initializing Google Consent Mode defaults...");
+      console.info("🛡️ [Consent] V2.2 - Initializing defaults...");
       window.dataLayer = window.dataLayer || [];
       function gtag() { dataLayer.push(arguments); }
       window.gtag = gtag;
@@ -21,12 +21,12 @@
         'security_storage': 'granted',
         'functionality_storage': 'granted',
         'personalization_storage': 'granted',
-        'wait_for_update': 2000
+        'wait_for_update': 2500
       });
 
       gtag('set', 'ads_data_redaction', true);
       gtag('js', new Date());
-      console.info("✅ [Consent] Defaults registered with 2000ms wait.");
+      console.info("✅ [Consent] V2.2 - Defaults registered (2.5s wait).");
     })();
   </script>
 

@@ -14,6 +14,18 @@ export default defineConfig(({ mode }) => ({
         mode === 'development' &&
         componentTagger(),
     ].filter(Boolean),
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    'vendor-pdf': ['jspdf', 'jspdf-autotable', 'html2canvas'],
+                    'vendor-excel': ['xlsx'],
+                    'vendor-ui': ['lucide-react', 'framer-motion'],
+                    'vendor-supabase': ['@supabase/supabase-js'],
+                }
+            }
+        }
+    },
     resolve: {
         alias: {
             "@": path.resolve(__dirname, "./src"),
