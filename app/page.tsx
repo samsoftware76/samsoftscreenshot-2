@@ -7,7 +7,7 @@ import ScreenshotCapture from '@/components/ScreenshotCapture';
 import WebcamCapture from '@/components/WebcamCapture';
 import type { AnalysisMode, MediaFile, MessagePayload } from '@/lib/chat';
 import { downloadAsTxt, downloadAsPdf, downloadAsDocx, downloadAsCsv, downloadAsExcel } from '@/lib/export';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/src/integrations/supabase/client';
 import type { Session } from '@supabase/supabase-js';
 import AuthUI from '@/components/Auth';
 import PaymentUI from '@/components/PaymentUI';

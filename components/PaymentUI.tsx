@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/src/integrations/supabase/client';
 import type { Session } from '@supabase/supabase-js';
 
 export default function PaymentUI({ session }: { session: Session }) {

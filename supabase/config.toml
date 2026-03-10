@@ -1,0 +1,7 @@
+project_id = "nowjzogygqbfcjkmizye"
+
+[functions.chat]
+verify_jwt = false
+
+[functions.pesapal]
+verify_jwt = false
