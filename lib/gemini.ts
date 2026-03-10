@@ -29,7 +29,7 @@ export type AnalysisMode = 'code' | 'essay';
  */
 export async function analyzeChallenge(
     imageBase64: string | undefined,
-    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | undefined,
+    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'application/pdf' | undefined,
     instructions?: string
 ): Promise<ChallengeAnalysis> {
     try {
@@ -148,7 +148,7 @@ Return only the hint text, no formatting.`
  */
 export async function analyzeEssayChallenge(
     imageBase64: string | undefined,
-    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | undefined,
+    imageMediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'application/pdf' | undefined,
     instructions?: string
 ): Promise<ChallengeAnalysis> {
     try {

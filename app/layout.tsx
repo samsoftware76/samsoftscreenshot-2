@@ -13,8 +13,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Challenge Helper - AI Powered Coding Assistant",
-  description: "AI Powered Coding Assistant",
+  title: "Software Challenge Solver | Sam Software LLC",
+  description: "Senior AI engineering for code, essays, and industrial data analysis.",
+  icons: {
+    icon: "/logo.svg",
+    apple: "/logo.svg",
+  },
 };
 
 export default function RootLayout({
@@ -26,6 +30,7 @@ export default function RootLayout({
     <html lang="en">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        suppressHydrationWarning
       >
         {children}
       </body>
