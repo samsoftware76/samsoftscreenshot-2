@@ -664,27 +664,7 @@ export default function App() {
                                 </div>
                             </div>
 
-                            {/* Local Input for this view */}
-                            <div className="mt-auto p-4 md:p-6 bg-gray-50 dark:bg-[#222] border-t border-black/5 dark:border-white/10 shadow-inner">
-                                <div className="relative flex items-center bg-white dark:bg-[#111] p-2 rounded-[1.5rem] border border-black/10 dark:border-white/10 shadow-sm">
-                                    <textarea
-                                        className="flex-1 max-h-32 min-h-[48px] w-full resize-none bg-transparent py-3 px-4 text-black dark:text-white placeholder-gray-400 focus:outline-none text-[14px] leading-relaxed font-medium"
-                                        placeholder={`Refine ${mode}...`}
-                                        value={input}
-                                        onChange={(e) => setInput(e.target.value)}
-                                        onKeyDown={handleKeyDown}
-                                        disabled={isLoading}
-                                        rows={1}
-                                    />
-                                    <button
-                                        onClick={handleSend}
-                                        disabled={isLoading || !input.trim()}
-                                        className="p-3 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:scale-105 active:scale-95 transition-all disabled:opacity-20 flex-shrink-0"
-                                    >
-                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 12h14M12 5l7 7-7 7" /></svg>
-                                    </button>
-                                </div>
-                            </div>
+
                         </div>
 
                         {/* Right: Solution Intelligence Area */}
@@ -884,6 +864,8 @@ export default function App() {
                                     rows={1}
                                 />
 
+                                <VoiceChat />
+
                                 <button
                                     onClick={handleSend}
                                     disabled={isLoading || (!input.trim() && attachments.length === 0)}
@@ -921,9 +903,6 @@ export default function App() {
                         </div>
                     </div>
                 </footer>
-
-                {/* Voice Capability Overlay */}
-                <VoiceChat />
             </div>
         </div>
     );
