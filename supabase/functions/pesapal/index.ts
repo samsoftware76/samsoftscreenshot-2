@@ -12,6 +12,7 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   try {
+    // 1. Initialize Supabase Clients
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) throw new Error('Missing Authorization header');
 
@@ -25,6 +26,7 @@ serve(async (req) => {
 
     const serviceRoleClient = createClient(supabaseUrl, supabaseServiceKey);
 
+    // 2. Validate User
     const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
     if (userError || !user) throw new Error(`Unauthorized: ${userError?.message || 'User not found'}`);
 
@@ -33,13 +35,13 @@ serve(async (req) => {
     const PESAPAL_IPN_ID = Deno.env.get('PESAPAL_IPN_ID');
 
     if (!PESAPAL_CONSUMER_KEY || !PESAPAL_CONSUMER_SECRET) {
-      throw new Error('Pesapal credentials not configured');
+      throw new Error('Pesapal credentials not configured in Supabase Secrets');
     }
 
     const url = new URL(req.url);
     const action = url.searchParams.get('action') || 'initiate';
 
-    // Get OAuth token
+    // 3. Get OAuth token
     const authRes = await fetch(`${PESAPAL_BASE}/api/Auth/RequestToken`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -51,6 +53,35 @@ serve(async (req) => {
 
     if (!authRes.ok) throw new Error(`Pesapal Auth Failed: ${authRes.status}`);
     const { token } = await authRes.json();
+
+    // 4. Multitenancy Provisioning (Service Role)
+    let organizationId: string | null = null;
+    try {
+      let { data: membership } = await serviceRoleClient
+        .from('organization_members')
+        .select('organization_id')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!membership) {
+        const { data: newOrg } = await serviceRoleClient.from('organizations').insert({
+          name: `${user.email?.split('@')[0]}'s Workspace`,
+          slug: `org-${user.id.substring(0, 8)}-pay-${Math.random().toString(36).substring(2, 5)}`
+        }).select().single();
+
+        if (newOrg) {
+          await serviceRoleClient.from('organization_members').insert({
+            organization_id: newOrg.id,
+            user_id: user.id,
+            role: 'owner'
+          });
+          membership = { organization_id: newOrg.id };
+        }
+      }
+      organizationId = membership?.organization_id || null;
+    } catch (err) {
+      console.warn('Org provisioning issue:', err);
+    }
 
     if (action === 'initiate' || action === 'submit-order') {
       const body = await req.json().catch(() => ({}));
@@ -72,6 +103,17 @@ serve(async (req) => {
         }
       };
 
+      // Record transaction
+      await serviceRoleClient.from('pesapal_transactions').insert({
+        organization_id: organizationId,
+        user_id: user.id,
+        merchant_reference: merchantRef,
+        amount: orderPayload.amount,
+        currency: orderPayload.currency,
+        description: orderPayload.description,
+        status: 'PENDING'
+      });
+
       const orderRes = await fetch(`${PESAPAL_BASE}/api/Transactions/SubmitOrderRequest`, {
         method: 'POST',
         headers: {
@@ -83,6 +125,14 @@ serve(async (req) => {
       });
 
       const orderData = await orderRes.json();
+
+      // Update with tracking ID
+      if (orderRes.ok && orderData.order_tracking_id) {
+        await serviceRoleClient
+          .from('pesapal_transactions')
+          .update({ order_tracking_id: orderData.order_tracking_id })
+          .eq('merchant_reference', merchantRef);
+      }
 
       return new Response(JSON.stringify({
         success: orderRes.ok,
@@ -102,7 +152,47 @@ serve(async (req) => {
       });
 
       if (!statusRes.ok) throw new Error(`Status Check Failed: ${statusRes.status}`);
+
       const statusData = await statusRes.json();
+
+      // Sync status to DB and allocate credits if completed
+      if (statusData.payment_status_description) {
+        const { data: oldTx } = await serviceRoleClient
+          .from('pesapal_transactions')
+          .select('status, amount, user_id, organization_id')
+          .eq('order_tracking_id', orderTrackingId)
+          .single();
+
+        await serviceRoleClient
+          .from('pesapal_transactions')
+          .update({
+            status: statusData.payment_status_description,
+            payment_method: statusData.payment_method
+          })
+          .eq('order_tracking_id', orderTrackingId);
+
+        if (statusData.payment_status_description === 'Completed' && oldTx?.status !== 'Completed') {
+          // Award Credits
+          const creditsToAward = 100;
+          await serviceRoleClient.rpc('add_credits', { user_id: oldTx.user_id, amount: creditsToAward });
+
+          // Update Org
+          if (oldTx.organization_id) {
+            await serviceRoleClient
+              .from('organizations')
+              .update({ billing_status: 'active' })
+              .eq('id', oldTx.organization_id);
+          }
+
+          // Notify
+          await serviceRoleClient.from('notifications').insert({
+            user_id: oldTx.user_id,
+            type: 'SUBSCRIPTION_SUCCESS',
+            recipient_email: user.email,
+            message: `Success! ${creditsToAward} credits added.`
+          });
+        }
+      }
 
       return new Response(JSON.stringify(statusData), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
@@ -113,7 +203,7 @@ serve(async (req) => {
     console.error('Pesapal Edge Function Error:', msg);
     return new Response(JSON.stringify({
       error: msg,
-      details: 'Check edge function logs for details.'
+      details: 'Check logs for details.'
     }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
