@@ -172,8 +172,18 @@ serve(async (req) => {
           .eq('order_tracking_id', orderTrackingId);
 
         if (statusData.payment_status_description === 'Completed' && oldTx?.status !== 'Completed') {
-          // Award Credits
-          const creditsToAward = 100;
+          // Award Credits based on Tiered Pricing
+          let creditsToAward = 100;
+          const amount = Number(oldTx.amount);
+
+          if (amount >= 140) creditsToAward = 5000;
+          else if (amount >= 60) creditsToAward = 2000;
+          else if (amount >= 35) creditsToAward = 1000;
+          else if (amount >= 20) creditsToAward = 500;
+          else if (amount >= 14) creditsToAward = 300;
+          else if (amount >= 10) creditsToAward = 200;
+          else if (amount >= 5) creditsToAward = 100;
+
           await serviceRoleClient.rpc('add_credits', { user_id: oldTx.user_id, amount: creditsToAward });
 
           // Update Org
@@ -189,7 +199,7 @@ serve(async (req) => {
             user_id: oldTx.user_id,
             type: 'SUBSCRIPTION_SUCCESS',
             recipient_email: user.email,
-            message: `Success! ${creditsToAward} credits added.`
+            message: `Success! Your "Challenge Solver" account has been credited with ${creditsToAward} points.`
           });
         }
       }

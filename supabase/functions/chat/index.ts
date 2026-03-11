@@ -7,10 +7,10 @@ const corsHeaders = {
 };
 
 function getSystemPrompt(mode: string): string {
-  if (mode === 'code') return `You are "Sam Software Challenge Solver", an elite coding assistant. Provide comprehensive, working code solutions with explanations. Format code using markdown blocks.`;
-  if (mode === 'essay') return `You are "Sam Software Challenge Solver", an expert academic assistant. Write original, thoughtful responses. ANTI-PLAGIARISM: Avoid typical AI vocabulary. Use high burstiness. Vary sentence lengths. Natural, conversational but academic tone. No copied text.`;
-  if (mode === 'handwriting') return `You are "Sam Software Challenge Solver", an advanced OCR engine. Perfectly transcribe all handwritten text from images into digital text. Do NOT summarize or answer questions. Just transcribe exactly.`;
-  return `You are "Sam Software Challenge Solver", a brilliant multi-modal assistant. Analyze uploaded documents, photos, or data and answer perfectly. Format in markdown.`;
+  if (mode === 'code') return `You are the "Elite Challenge Solver". Analyze the coding problem. Provide the COMPLETE WORKING CODE SOLUTION. Detect the language. Format: description, code block, steps, hints, difficulty.`;
+  if (mode === 'essay') return `You are the "Elite Essay Assistant". Write original, human-like responses. ANTI-PLAGIARISM: Avoid AI-typical words (delve, tapestry, furthermore). Use high burstiness (varied sentence lengths). Punchy vs. Complex mix. Natural student tone.`;
+  if (mode === 'handwriting') return `You are the "Master OCR Engine". Transcribe all handwritten or digital text exactly as it appears. No summaries. No conversation. Just raw text transcription.`;
+  return `You are the "Military-Grade AI Partner". Analyze input and provide professional, high-performance assistance. Format in clean markdown with small-caps emphasis on key terms.`;
 }
 
 serve(async (req) => {
@@ -47,7 +47,7 @@ serve(async (req) => {
 
     const url = new URL(req.url);
     const action = url.searchParams.get('action') || body.action;
-    const { messages: clientMessages, mode, cursor, limit = 20 } = body;
+    const { messages: clientMessages, mode, sessionId, cursor, limit = 20, title } = body;
 
     // 3. Organization Provisioning (Robust Multitenancy)
     let organizationId: string | null = null;
@@ -100,6 +100,36 @@ serve(async (req) => {
       console.warn('Credit check bypassed due to DB latency:', err);
     }
 
+    // --- CASE 0: List/Create Sessions ---
+    if (action === 'get-sessions') {
+      const { data, error } = await supabaseClient
+        .from('chat_sessions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return new Response(JSON.stringify({ sessions: data }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (action === 'create-session') {
+      const { data, error } = await serviceRoleClient
+        .from('chat_sessions')
+        .insert({
+          user_id: user.id,
+          organization_id: organizationId,
+          title: title || 'New Conversation',
+          mode: mode || 'general'
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return new Response(JSON.stringify(data), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // --- CASE 1: Fetch History (Infinite Scroll) ---
     if (action === 'get-history') {
       let query = supabaseClient
@@ -109,8 +139,12 @@ serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(limit);
 
-      if (organizationId) {
+      if (sessionId) {
+        query = query.eq('session_id', sessionId);
+      } else if (organizationId) {
         query = query.eq('organization_id', organizationId);
+      } else {
+        query = query.eq('user_id', user.id);
       }
 
       if (cursor) {
@@ -142,6 +176,7 @@ serve(async (req) => {
       supabaseClient.from('chat_messages').insert({
         user_id: user.id,
         organization_id: organizationId,
+        session_id: sessionId,
         role: 'user',
         content: contentText,
         mode: mode || 'general'
@@ -193,6 +228,7 @@ serve(async (req) => {
     serviceRoleClient.from('chat_messages').insert({
       user_id: user.id,
       organization_id: organizationId,
+      session_id: sessionId,
       role: 'assistant',
       content: aiText,
       mode: mode || 'general'
