@@ -460,18 +460,16 @@ export default function App() {
     }
 
     return (
-        <div className="flex h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] font-sans transition-colors duration-300 overflow-hidden">
-            {/* Multi-Chat Sidebar Overlay for Mobile */}
-            {sidebarOpen && (
-                <div
-                    className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden"
-                    onClick={() => setSidebarOpen(false)}
-                />
-            )}
+        <div className="flex h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] font-sans transition-colors duration-300 overflow-hidden relative">
+            {/* Drawer Backdrop Overlay (Mobile & Desktop) */}
+            <div
+                className={`fixed inset-0 bg-black/40 backdrop-blur-sm z-40 transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                onClick={() => setSidebarOpen(false)}
+            />
 
-            {/* Multi-Chat Sidebar */}
-            <aside className={`${sidebarOpen ? 'w-80' : 'w-0'} bg-white dark:bg-[#111] border-r border-black/5 dark:border-white/10 transition-all duration-300 flex flex-col z-40 fixed lg:relative h-full group overflow-hidden`}>
-                <div className="p-6 flex flex-col h-full w-80">
+            {/* Drawer Sidebar */}
+            <aside className={`fixed inset-y-0 left-0 bg-white dark:bg-[#111] w-80 shadow-2xl z-50 transform transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                <div className="p-6 flex flex-col h-full w-full">
                     <button
                         onClick={() => startNewChat(mode)}
                         className="w-full py-3 bg-black dark:bg-white text-white dark:text-black rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl hover:scale-[1.02] active:scale-95 transition-all mb-8 flex items-center justify-center gap-2"
@@ -510,8 +508,8 @@ export default function App() {
                 </div>
             </aside>
 
-            <div className="flex flex-col flex-1 min-w-0">
-                <header className="flex-shrink-0 bg-white/90 dark:bg-black/90 backdrop-blur-xl border-b border-gray-200/50 dark:border-white/10 px-3 sm:px-6 md:px-8 py-3 flex items-center justify-between z-30 sticky top-0 shadow-sm">
+            <div className="flex flex-col flex-1 min-w-0 h-full">
+                <header className="flex-shrink-0 bg-transparent px-4 sm:px-8 py-4 flex items-center justify-between z-30 w-full">
                     <div className="flex items-center gap-4">
                         <button
                             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -609,10 +607,10 @@ export default function App() {
                         </div>
                     </main>
                 ) : (mode === 'code' || mode === 'essay') ? (
-                    <main className="flex-1 flex flex-col md:flex-row h-full overflow-hidden">
-                        {/* Left: Capture & Interaction */}
-                        <div className="w-full md:w-1/3 border-r border-black/5 dark:border-white/10 overflow-y-auto p-6 md:p-8 bg-black/[0.02] space-y-8 flex flex-col">
-                            <div className="flex-1 space-y-8">
+                    <main className="flex-1 flex flex-col lg:flex-row h-full overflow-hidden max-w-[1600px] mx-auto w-full gap-4 lg:gap-8 px-4 sm:px-8 pb-4 lg:pb-8 pt-0">
+                        {/* Left: Capture & Interaction Card */}
+                        <div className="w-full lg:w-1/2 flex flex-col bg-white dark:bg-[#1A1A1A] rounded-[2rem] border border-black/5 dark:border-white/10 shadow-[0_8px_30px_rgb(0,0,0,0.04)] overflow-hidden shrink-0">
+                            <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar space-y-8 flex flex-col">
                                 <div className="flex flex-col gap-4">
                                     <h2 className="text-2xl font-black uppercase tracking-tighter">Capture Center</h2>
                                     <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">Update context with new captures</p>
@@ -667,8 +665,8 @@ export default function App() {
                             </div>
 
                             {/* Local Input for this view */}
-                            <div className="mt-auto pt-6 border-t border-black/5 dark:border-white/10">
-                                <div className="relative flex items-center bg-white dark:bg-black/40 p-2 rounded-[1.5rem] border border-black/10 dark:border-white/10 shadow-2xl">
+                            <div className="mt-auto p-4 md:p-6 bg-gray-50 dark:bg-[#222] border-t border-black/5 dark:border-white/10 shadow-inner">
+                                <div className="relative flex items-center bg-white dark:bg-[#111] p-2 rounded-[1.5rem] border border-black/10 dark:border-white/10 shadow-sm">
                                     <textarea
                                         className="flex-1 max-h-32 min-h-[48px] w-full resize-none bg-transparent py-3 px-4 text-black dark:text-white placeholder-gray-400 focus:outline-none text-[14px] leading-relaxed font-medium"
                                         placeholder={`Refine ${mode}...`}
@@ -681,7 +679,7 @@ export default function App() {
                                     <button
                                         onClick={handleSend}
                                         disabled={isLoading || !input.trim()}
-                                        className="p-3 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:scale-105 active:scale-95 transition-all disabled:opacity-20"
+                                        className="p-3 bg-black dark:bg-white text-white dark:text-black rounded-xl hover:scale-105 active:scale-95 transition-all disabled:opacity-20 flex-shrink-0"
                                     >
                                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 12h14M12 5l7 7-7 7" /></svg>
                                     </button>
@@ -689,12 +687,12 @@ export default function App() {
                             </div>
                         </div>
 
-                        {/* Right: Solution Intelligence */}
-                        <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar bg-[#FCF1E922] dark:bg-[#00000022]">
+                        {/* Right: Solution Intelligence Area */}
+                        <div className="flex-1 min-w-0 flex flex-col bg-white dark:bg-[#111] rounded-[2rem] overflow-hidden relative shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-black/5 dark:border-white/10">
                             {currentSolution ? (
                                 <SolutionSteps {...currentSolution} />
                             ) : (
-                                <div className="h-full flex flex-col items-center justify-center text-center p-8 bg-white/20 dark:bg-white/5 rounded-[2rem] border border-black/5 dark:border-white/10 backdrop-blur-sm">
+                                <div className="h-full bg-white dark:bg-[#1A1A1A] border border-black/5 dark:border-white/10 rounded-[2rem] flex flex-col items-center justify-center text-center p-8">
                                     <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mb-6 shadow-xl animate-pulse">
                                         <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                                     </div>
