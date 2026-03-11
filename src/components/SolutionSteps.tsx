@@ -51,10 +51,10 @@ export default function SolutionSteps({
   };
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-[#111] rounded-[2rem] shadow-2xl border border-black/5 dark:border-white/10 overflow-hidden">
+    <div className="h-full flex flex-col bg-transparent overflow-hidden">
       {/* Header */}
-      <div className="p-6 md:p-8 bg-black dark:bg-white text-white dark:text-black">
-        <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="p-5 md:p-6 bg-black dark:bg-[#1A1A1A] text-white shrink-0">
+        <div className="flex items-start justify-between gap-4 mb-3">
           <h2 className="text-xl md:text-2xl font-black uppercase tracking-tighter">Solution Intelligence</h2>
           <span
             className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${getDifficultyColor(difficulty)}`}
