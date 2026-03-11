@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => ({
         rollupOptions: {
             output: {
                 manualChunks: {
-                    'vendor-pdf': ['jspdf', 'jspdf-autotable', 'html2canvas'],
+                    'vendor-pdf': ['jspdf', 'jspdf-autotable'],
                     'vendor-excel': ['xlsx'],
                     'vendor-ui': ['lucide-react', 'framer-motion'],
                     'vendor-supabase': ['@supabase/supabase-js'],
