@@ -37,8 +37,19 @@ serve(async (req) => {
     const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
     if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured in Supabase Secrets');
 
-    const body = await req.json().catch(() => ({}));
-    const { messages: clientMessages, mode, action, cursor, limit = 20 } = body;
+    let body: any = {};
+    try {
+      const text = await req.text();
+      if (text) {
+        body = JSON.parse(text);
+      }
+    } catch (e) {
+      console.warn('Could not parse JSON body:', e);
+    }
+
+    const url = new URL(req.url);
+    const action = url.searchParams.get('action') || body.action;
+    const { messages: clientMessages, mode, cursor, limit = 20 } = body;
 
     // 3. Organization Provisioning (No Shortcuts Multitenancy)
     let { data: membership, error: memberError } = await serviceRoleClient
@@ -62,6 +73,22 @@ serve(async (req) => {
       membership = { organization_id: newOrg.id };
     }
     const organizationId = membership.organization_id;
+    console.log(`Action: ${action}, Org: ${organizationId}, User: ${user.id}`);
+
+    // 4. Credit Check
+    const { data: profile, error: profileError } = await serviceRoleClient
+      .from('profiles')
+      .select('credits')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !profile) throw new Error('Could not verify credits');
+    if (profile.credits <= 0) {
+      return new Response(JSON.stringify({ error: 'INSUFFICIENT_CREDITS', message: 'You have depleted your credits. Please upgrade to continue.' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     // --- CASE 1: Fetch History (Infinite Scroll) ---
     if (action === 'get-history') {
@@ -135,14 +162,14 @@ serve(async (req) => {
       }
     }
 
-    // Call Gemini 1.5 Flash (Large context support)
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    // Call Gemini (Latest v1beta for robustness as per senseai)
+    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
         system_instruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: { maxOutputTokens: 2048 }
+        generationConfig: { maxOutputTokens: 4096 }
       }),
     });
 
@@ -152,8 +179,8 @@ serve(async (req) => {
     const aiText = resData.candidates?.[0]?.content?.parts?.[0]?.text || '';
     if (!aiText) throw new Error('Gemini returned an empty response');
 
-    // Persist Assistant Response
-    await supabaseClient.from('chat_messages').insert({
+    // Persist Assistant Response & Decrement Credit
+    await serviceRoleClient.from('chat_messages').insert({
       user_id: user.id,
       organization_id: organizationId,
       role: 'assistant',
@@ -161,13 +188,21 @@ serve(async (req) => {
       mode: mode || 'general'
     });
 
+    await serviceRoleClient.rpc('decrement_credits', { user_id: user.id });
+
     return new Response(JSON.stringify({ text: aiText }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('Edge Function Error:', msg);
-    return new Response(JSON.stringify({ error: msg }), {
+    console.error('Full Error Object:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+
+    return new Response(JSON.stringify({
+      error: msg,
+      details: error?.details || error?.hint || 'Check Supabase Edge Function logs for stack trace.',
+      context: 'chat_function_v2'
+    }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });

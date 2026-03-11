@@ -2,6 +2,32 @@
 -- MULTITENANT PRODUCTION SCHEMA (MIGRATION-SAFE)
 -- ==========================================
 
+-- PHASE 0: PRE-FLIGHT MIGRATIONS (Ensure columns exist for policies)
+DO $$ 
+BEGIN 
+    -- Profiles Missing Columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='profiles' AND column_name='is_admin') THEN
+        ALTER TABLE public.profiles ADD COLUMN is_admin BOOLEAN DEFAULT FALSE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='profiles' AND column_name='credits') THEN
+        ALTER TABLE public.profiles ADD COLUMN credits INTEGER DEFAULT 10;
+    END IF;
+
+    -- Chat Messages Missing Columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='chat_messages' AND column_name='organization_id') THEN
+        ALTER TABLE public.chat_messages ADD COLUMN organization_id UUID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='chat_messages' AND column_name='mode') THEN
+        ALTER TABLE public.chat_messages ADD COLUMN mode TEXT DEFAULT 'general';
+    END IF;
+
+    -- Pesapal Transactions Missing Columns
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='pesapal_transactions' AND column_name='organization_id') THEN
+        ALTER TABLE public.pesapal_transactions ADD COLUMN organization_id UUID;
+    END IF;
+END $$;
+
+
 -- 1. Organizations (Tenants)
 CREATE TABLE IF NOT EXISTS public.organizations (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -11,14 +37,16 @@ CREATE TABLE IF NOT EXISTS public.organizations (
     billing_status TEXT DEFAULT 'trial' CHECK (billing_status IN ('trial', 'active', 'past_due', 'canceled'))
 );
 
--- 2. Profiles (User Metadata)
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     email TEXT UNIQUE NOT NULL,
     full_name TEXT,
-    avatar_url TEXT
+    avatar_url TEXT,
+    is_admin BOOLEAN DEFAULT FALSE,
+    credits INTEGER DEFAULT 10
 );
+
 
 -- 3. Organization Members (Multitenancy Junction)
 CREATE TABLE IF NOT EXISTS public.organization_members (
@@ -41,15 +69,6 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
     metadata JSONB DEFAULT '{}'::jsonb
 );
 
--- MIGRATION: Add organization_id to chat_messages if it doesn't exist
-DO $$ 
-BEGIN 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='chat_messages' AND column_name='organization_id') THEN
-        ALTER TABLE public.chat_messages ADD COLUMN organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE;
-        -- Set a required constraint after potentially handling existing data if needed
-        -- ALTER TABLE public.chat_messages ALTER COLUMN organization_id SET NOT NULL;
-    END IF;
-END $$;
 
 -- 5. Pesapal Transactions
 CREATE TABLE IF NOT EXISTS public.pesapal_transactions (
@@ -65,13 +84,17 @@ CREATE TABLE IF NOT EXISTS public.pesapal_transactions (
     description TEXT
 );
 
--- MIGRATION: Add organization_id to pesapal_transactions if it doesn't exist
-DO $$ 
-BEGIN 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='pesapal_transactions' AND column_name='organization_id') THEN
-        ALTER TABLE public.pesapal_transactions ADD COLUMN organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE;
-    END IF;
-END $$;
+-- 6. Notifications
+CREATE TABLE IF NOT EXISTS public.notifications (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL, -- 'SUBSCRIPTION_SUCCESS', 'CREDIT_LOW', 'SYSTEM'
+    recipient_email TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read BOOLEAN DEFAULT FALSE
+);
+
 
 -- ==========================================
 -- ENABLE RLS
@@ -146,6 +169,18 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
+DROP POLICY IF EXISTS "Admins can view all transactions" ON public.pesapal_transactions;
+CREATE POLICY "Admins can view all transactions" ON public.pesapal_transactions
+    FOR SELECT USING (
+        EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin = true)
+    );
+
+DROP POLICY IF EXISTS "Admins can view all memberships" ON public.organization_members;
+CREATE POLICY "Admins can view all memberships" ON public.organization_members
+    FOR SELECT USING (
+        EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin = true)
+    );
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_chat_messages_org ON public.chat_messages(organization_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON public.chat_messages(user_id);
@@ -156,3 +191,22 @@ GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO authenticated;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO service_role;
+
+-- Credit Management RPC
+CREATE OR REPLACE FUNCTION public.decrement_credits(user_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE public.profiles
+    SET credits = credits - 1
+    WHERE id = user_id AND credits > 0;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.add_credits(user_id UUID, amount INTEGER)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE public.profiles
+    SET credits = credits + amount
+    WHERE id = user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;

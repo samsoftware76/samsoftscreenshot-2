@@ -33,7 +33,7 @@ export default function AuthUI() {
                         input: 'rounded-xl border-gray-100 dark:border-white/10 bg-gray-50 dark:bg-white/5',
                     }
                 }}
-                providers={['google', 'github']}
+                providers={['google']}
                 theme="dark"
             />
         </div>
