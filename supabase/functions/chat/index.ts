@@ -199,15 +199,17 @@ serve(async (req) => {
       }
     }
 
-    // Call Gemini (The "Magic": 2.5 Flash + Search)
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    // Call Gemini (The "Magic": 1.5 Flash - Stable Response)
+    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
         system_instruction: { parts: { text: systemPrompt } },
-        generationConfig: { maxOutputTokens: 4096 },
-        tools: [{ google_search: {} }]
+        generationConfig: {
+          maxOutputTokens: 4096,
+          temperature: 0.7
+        }
       }),
     });
 
