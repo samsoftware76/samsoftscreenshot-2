@@ -83,6 +83,10 @@ export default function App() {
     const [session, setSession] = useState<Session | null>(null);
     const [isAuthLoading, setIsAuthLoading] = useState(true);
     const [showPayment, setShowPayment] = useState(false);
+    const [hasMore, setHasMore] = useState(true);
+    const [isOldHistoryLoading, setIsOldHistoryLoading] = useState(false);
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const topSentinelRef = useRef<HTMLDivElement>(null);
 
     // Auth Listener
     useEffect(() => {
@@ -99,27 +103,96 @@ export default function App() {
         return () => subscription.unsubscribe();
     }, []);
 
-    // Sync Supabase History if logged in
+    // Initial Load
     useEffect(() => {
         if (session) {
-            const loadSupabaseHistory = async () => {
-                const { data } = await supabase
-                    .from('chat_messages')
-                    .select('*')
-                    .order('created_at', { ascending: true })
-                    .limit(100);
-
-                if (data && data.length > 0) {
-                    const formattedMessages: MessagePayload[] = data.map(m => ({
-                        role: m.role === 'assistant' ? 'model' : 'user',
-                        text: m.content
-                    }));
-                    setMessages(formattedMessages);
+            const initialLoad = async () => {
+                setIsLoading(true);
+                try {
+                    const { data, error } = await supabase.functions.invoke('chat', {
+                        body: { action: 'get-history', limit: 20 }
+                    });
+                    if (error) throw error;
+                    if (data?.messages) {
+                        const formatted = data.messages.map((m: any) => ({
+                            role: m.role === 'assistant' ? 'model' : 'user',
+                            text: m.content,
+                            created_at: m.created_at
+                        }));
+                        setMessages(formatted);
+                        setHasMore(data.hasMore);
+                    }
+                } catch (err) {
+                    console.error('Initial load error:', err);
+                } finally {
+                    setIsLoading(false);
                 }
             };
-            loadSupabaseHistory();
+            initialLoad();
         }
     }, [session]);
+
+    // Infinite Scroll Implementation
+    const loadMoreMessages = async () => {
+        if (!hasMore || isOldHistoryLoading || messages.length === 0) return;
+
+        setIsOldHistoryLoading(true);
+        const oldestMessage = messages[0];
+        const cursor = (oldestMessage as any).created_at;
+
+        try {
+            const { data, error } = await supabase.functions.invoke('chat', {
+                body: { action: 'get-history', cursor, limit: 20 }
+            });
+
+            if (error) throw error;
+
+            if (data?.messages && data.messages.length > 0) {
+                const formatted = data.messages.map((m: any) => ({
+                    role: m.role === 'assistant' ? 'model' : 'user',
+                    text: m.content,
+                    created_at: m.created_at
+                }));
+
+                // Maintain scroll position roughly
+                const scrollHeightBefore = scrollContainerRef.current?.scrollHeight || 0;
+
+                setMessages(prev => [...formatted, ...prev]);
+                setHasMore(data.hasMore);
+
+                // Wait for render, then adjust scroll
+                setTimeout(() => {
+                    if (scrollContainerRef.current) {
+                        const scrollHeightAfter = scrollContainerRef.current.scrollHeight;
+                        scrollContainerRef.current.scrollTop = scrollHeightAfter - scrollHeightBefore;
+                    }
+                }, 0);
+            } else {
+                setHasMore(false);
+            }
+        } catch (err) {
+            console.error('Load more error:', err);
+        } finally {
+            setIsOldHistoryLoading(false);
+        }
+    };
+
+    // Sentinel Intersection Observer
+    useEffect(() => {
+        if (!topSentinelRef.current || !hasMore) return;
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting) {
+                    loadMoreMessages();
+                }
+            },
+            { threshold: 1.0, root: scrollContainerRef.current }
+        );
+
+        observer.observe(topSentinelRef.current);
+        return () => observer.disconnect();
+    }, [hasMore, messages, isOldHistoryLoading]);
 
     // Persistence: Load from localStorage (as fallback or for guests)
     useEffect(() => {
@@ -163,10 +236,12 @@ export default function App() {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
-    // Auto-scroll to bottom of chat
+    // Auto-scroll to bottom of chat ONLY when sending new message
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+        if (!isOldHistoryLoading) {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [messages.length, isOldHistoryLoading]);
 
     const handleCapture = (data: string) => {
         const base64Data = data.includes('base64,') ? data.split('base64,')[1] : data;
@@ -234,14 +309,7 @@ export default function App() {
         setError(null);
 
         try {
-            if (session) {
-                supabase.from('chat_messages').insert({
-                    user_id: session.user.id,
-                    role: 'user',
-                    content: userMessage.text
-                }).then();
-            }
-
+            // No manual insert here - the Edge Function handles it "No Shortcuts" way
             const { data, error: fnError } = await supabase.functions.invoke('chat', {
                 body: { messages: newHistory, mode },
             });
@@ -251,14 +319,7 @@ export default function App() {
 
             const aiText = data.text;
             setMessages(prev => [...prev, { role: 'model', text: aiText }]);
-
-            if (session) {
-                supabase.from('chat_messages').insert({
-                    user_id: session.user.id,
-                    role: 'assistant',
-                    content: aiText
-                }).then();
-            }
+            // No manual insert for assistant either
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Unknown error occurred';
             setError(message);
@@ -374,8 +435,17 @@ export default function App() {
                 </div>
             )}
 
-            <main className="flex-1 overflow-y-auto px-4 md:px-0 py-8 space-y-8 scroll-smooth" >
+            <main className="flex-1 overflow-y-auto px-4 md:px-0 py-8 space-y-8 scroll-smooth" ref={scrollContainerRef}>
                 <div className="max-w-4xl mx-auto space-y-8">
+                    <div ref={topSentinelRef} className="h-4 w-full flex justify-center items-center">
+                        {isOldHistoryLoading && (
+                            <div className="flex gap-1 py-4">
+                                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
+                            </div>
+                        )}
+                    </div>
                     {mode === 'handwriting' && messages.length === 0 && (
                         <div className="text-center py-12 px-6 bg-white/20 dark:bg-white/5 rounded-3xl border border-black/5 dark:border-white/5 backdrop-blur-sm shadow-sm">
                             <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
@@ -468,6 +538,7 @@ export default function App() {
                             </div>
                         </div>
                     )}
+                    <div ref={messagesEndRef} />
                 </div>
             </main>
 

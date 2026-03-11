@@ -15,6 +15,7 @@ export interface MessagePayload {
     role: 'user' | 'model';
     text: string;
     files?: MediaFile[];
+    created_at?: string;
 }
 
 function getSystemPromptForMode(mode: AnalysisMode): string {

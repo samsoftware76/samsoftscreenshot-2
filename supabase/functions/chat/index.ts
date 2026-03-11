@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -16,60 +17,157 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   try {
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) throw new Error('LOVABLE_API_KEY not configured');
+    // 1. Initialize Supabase Clients
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader) throw new Error('Missing Authorization header');
 
-    const { messages, mode } = await req.json();
-    if (!messages || messages.length === 0) {
-      return new Response(JSON.stringify({ error: 'Messages required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } }
+    });
+    const serviceRoleClient = createClient(supabaseUrl, supabaseServiceKey);
+
+    // 2. Validate User
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+    if (userError || !user) throw new Error(`Unauthorized: ${userError?.message || 'User not found'}`);
+
+    const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
+    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured in Supabase Secrets');
+
+    const body = await req.json().catch(() => ({}));
+    const { messages: clientMessages, mode, action, cursor, limit = 20 } = body;
+
+    // 3. Organization Provisioning (No Shortcuts Multitenancy)
+    let { data: membership, error: memberError } = await serviceRoleClient
+      .from('organization_members')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (!membership) {
+      const { data: newOrg, error: orgError } = await serviceRoleClient.from('organizations').insert({
+        name: `${user.email?.split('@')[0]}'s Workspace`,
+        slug: `org-${user.id.substring(0, 8)}-${Math.random().toString(36).substring(2, 5)}`
+      }).select().single();
+      if (orgError || !newOrg) throw new Error(`Failed to create organization: ${orgError?.message}`);
+
+      await serviceRoleClient.from('organization_members').insert({
+        organization_id: newOrg.id,
+        user_id: user.id,
+        role: 'owner'
+      });
+      membership = { organization_id: newOrg.id };
+    }
+    const organizationId = membership.organization_id;
+
+    // --- CASE 1: Fetch History (Infinite Scroll) ---
+    if (action === 'get-history') {
+      let query = supabaseClient
+        .from('chat_messages')
+        .select('*')
+        .eq('organization_id', organizationId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (cursor) {
+        query = query.lt('created_at', cursor);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      return new Response(JSON.stringify({
+        messages: data?.reverse() || [],
+        hasMore: data?.length === limit
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // --- CASE 2: Send Message (Large Context Window) ---
+    if (!clientMessages || !Array.isArray(clientMessages) || clientMessages.length === 0) {
+      throw new Error('Invalid or empty messages payload');
     }
 
     const systemPrompt = getSystemPrompt(mode || 'general');
+    const lastUserMessage = clientMessages[clientMessages.length - 1];
 
-    // Build messages for the AI API
-    const aiMessages = messages.map((msg: any) => {
-      const content: any[] = [];
-      if (msg.text) content.push({ type: 'text', text: msg.text });
-      if (msg.files?.length > 0) {
-        for (const f of msg.files) {
-          content.push({
-            type: 'image_url',
-            image_url: { url: `data:${f.mimeType};base64,${f.data}` },
-          });
-        }
+    // Persist user message
+    if (lastUserMessage && lastUserMessage.role === 'user') {
+      await supabaseClient.from('chat_messages').insert({
+        user_id: user.id,
+        organization_id: organizationId,
+        role: 'user',
+        content: lastUserMessage.text,
+        mode: mode || 'general'
+      });
+    }
+
+    // Context Window: Fetch more history for 150,000 token window support
+    // We'll fetch last 100 messages which fits well within 150k tokens
+    const { data: history } = await supabaseClient
+      .from('chat_messages')
+      .select('role, content')
+      .eq('organization_id', organizationId)
+      .order('created_at', { ascending: true })
+      .limit(100);
+
+    const contents = (history && history.length > 0)
+      ? history.map((m: any) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      }))
+      : clientMessages.map((m: any) => ({
+        role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
+        parts: [{ text: m.text || m.content || '' }]
+      }));
+
+    // Add files to the current message if present
+    if (lastUserMessage?.files?.length > 0) {
+      const lastPart = contents[contents.length - 1];
+      for (const f of lastUserMessage.files) {
+        lastPart.parts.push({
+          inline_data: { mime_type: f.mimeType, data: f.data }
+        });
       }
-      return { role: msg.role === 'model' ? 'assistant' : 'user', content };
-    });
+    }
 
-    // Prepend system message
-    aiMessages.unshift({ role: 'system', content: systemPrompt });
-
-    const response = await fetch('https://lovable.dev/api/v2/chat/completions', {
+    // Call Gemini 1.5 Flash (Large context support)
+    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: aiMessages,
+        contents,
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: { maxOutputTokens: 2048 }
       }),
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`AI API error [${response.status}]: ${errText}`);
-    }
+    if (!geminiRes.ok) throw new Error(`Gemini API error: ${geminiRes.status}`);
 
-    const data = await response.json();
-    const text = data.choices?.[0]?.message?.content || '';
+    const resData = await geminiRes.json();
+    const aiText = resData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!aiText) throw new Error('Gemini returned an empty response');
 
-    return new Response(JSON.stringify({ text }), {
+    // Persist Assistant Response
+    await supabaseClient.from('chat_messages').insert({
+      user_id: user.id,
+      organization_id: organizationId,
+      role: 'assistant',
+      content: aiText,
+      mode: mode || 'general'
+    });
+
+    return new Response(JSON.stringify({ text: aiText }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Chat error:', error);
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }), {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('Edge Function Error:', msg);
+    return new Response(JSON.stringify({ error: msg }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
