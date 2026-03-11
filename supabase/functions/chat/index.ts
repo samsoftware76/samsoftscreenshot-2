@@ -200,7 +200,7 @@ serve(async (req) => {
 
     return new Response(JSON.stringify({
       error: msg,
-      details: error?.details || error?.hint || 'Check Supabase Edge Function logs for stack trace.',
+      details: (error as any)?.details || (error as any)?.hint || 'Check Supabase Edge Function logs for stack trace.',
       context: 'chat_function_v2'
     }), {
       status: 500,
