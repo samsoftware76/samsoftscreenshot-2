@@ -155,15 +155,50 @@ serve(async (req) => {
 
       const statusData = await statusRes.json();
 
-      // Sync status to DB
+      // Sync status to DB and allocate credits if completed
       if (statusData.payment_status_description) {
-        await supabaseClient
+        const { data: oldTx } = await serviceRoleClient
+          .from('pesapal_transactions')
+          .select('status, amount, user_id, organization_id')
+          .eq('order_tracking_id', orderTrackingId)
+          .single();
+
+        await serviceRoleClient
           .from('pesapal_transactions')
           .update({
             status: statusData.payment_status_description,
             payment_method: statusData.payment_method
           })
           .eq('order_tracking_id', orderTrackingId);
+
+        if (statusData.payment_status_description === 'Completed' && oldTx?.status !== 'Completed') {
+          // 1. Award Credits (10 credits per USD by default, or 100 for a standard $10 sub)
+          const creditsToAward = 100;
+          await serviceRoleClient.rpc('add_credits', { user_id: oldTx.user_id, amount: creditsToAward });
+
+          // 2. Update Organization Billing
+          if (oldTx.organization_id) {
+            await serviceRoleClient
+              .from('organizations')
+              .update({ billing_status: 'active' })
+              .eq('id', oldTx.organization_id);
+          }
+
+          // 3. Notify User
+          await serviceRoleClient.from('notifications').insert({
+            user_id: oldTx.user_id,
+            type: 'SUBSCRIPTION_SUCCESS',
+            recipient_email: user.email,
+            message: `Success! You have been awarded ${creditsToAward} credits for your subscription.`
+          });
+
+          // 4. Notify Admin (samsoftware75@gmail.com)
+          await serviceRoleClient.from('notifications').insert({
+            type: 'SYSTEM',
+            recipient_email: 'samsoftware75@gmail.com',
+            message: `ADMIN ALERT: New subscription completed by ${user.email}. Amount: ${oldTx.amount}. Credits Awarded: ${creditsToAward}.`
+          });
+        }
       }
 
       return new Response(JSON.stringify(statusData), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });

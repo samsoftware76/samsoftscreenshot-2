@@ -9,6 +9,7 @@ import { supabase } from '@/integrations/supabase/client';
 import type { Session } from '@supabase/supabase-js';
 import AuthUI from '@/components/Auth';
 import PaymentUI from '@/components/PaymentUI';
+import AdminDashboard from '@/components/AdminDashboard';
 
 const MessageActions = ({ text }: { text: string }) => {
     const [copied, setCopied] = useState(false);
@@ -83,6 +84,9 @@ export default function App() {
     const [session, setSession] = useState<Session | null>(null);
     const [isAuthLoading, setIsAuthLoading] = useState(true);
     const [showPayment, setShowPayment] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [credits, setCredits] = useState<number | null>(null);
+    const [view, setView] = useState<'chat' | 'admin'>('chat');
     const [hasMore, setHasMore] = useState(true);
     const [isOldHistoryLoading, setIsOldHistoryLoading] = useState(false);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -103,9 +107,18 @@ export default function App() {
         return () => subscription.unsubscribe();
     }, []);
 
-    // Initial Load
+    // Initial Load & Admin Check
     useEffect(() => {
         if (session) {
+            const checkAdminAndCredits = async () => {
+                const { data }: any = await supabase.from('profiles').select('is_admin, credits').eq('id', session.user.id).single();
+                if (data) {
+                    if (data.is_admin) setIsAdmin(true);
+                    setCredits(data.credits);
+                }
+            };
+            checkAdminAndCredits();
+
             const initialLoad = async () => {
                 setIsLoading(true);
                 try {
@@ -122,6 +135,9 @@ export default function App() {
                         setMessages(formatted);
                         setHasMore(data.hasMore);
                     }
+                    // Update credits after sending/receiving
+                    const { data: profile } = await supabase.from('profiles').select('credits').eq('id', session.user.id).single();
+                    if (profile) setCredits(profile.credits);
                 } catch (err) {
                     console.error('Initial load error:', err);
                 } finally {
@@ -397,6 +413,12 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2 sm:gap-3">
+                    {credits !== null && (
+                        <div className="hidden xs:flex items-center gap-1.5 px-3 py-1.5 bg-black/5 dark:bg-white/5 rounded-lg border border-black/5 dark:border-white/10">
+                            <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest leading-none">Credits</span>
+                            <span className="text-xs font-black text-black dark:text-white leading-none">{credits}</span>
+                        </div>
+                    )}
                     <div className="hidden md:flex flex-col items-end mr-1 sm:mr-2">
                         <span className="text-[9px] font-black text-black dark:text-gray-400 uppercase tracking-widest">{session.user.email?.split('@')[0]}</span>
                         <button
@@ -418,6 +440,15 @@ export default function App() {
                         <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
                         UPGRADE
                     </button>
+
+                    {isAdmin && (
+                        <button
+                            onClick={() => setView(view === 'chat' ? 'admin' : 'chat')}
+                            className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-xl transition-all hover:scale-105 active:scale-95 flex items-center gap-2 border border-white/10"
+                        >
+                            {view === 'chat' ? 'Admin' : 'Chat'}
+                        </button>
+                    )}
                 </div>
             </header >
 
@@ -435,112 +466,120 @@ export default function App() {
                 </div>
             )}
 
-            <main className="flex-1 overflow-y-auto px-4 md:px-0 py-8 space-y-8 scroll-smooth" ref={scrollContainerRef}>
-                <div className="max-w-4xl mx-auto space-y-8">
-                    <div ref={topSentinelRef} className="h-4 w-full flex justify-center items-center">
-                        {isOldHistoryLoading && (
-                            <div className="flex gap-1 py-4">
-                                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
+            {view === 'admin' ? (
+                <main className="flex-1 overflow-y-auto">
+                    <div className="max-w-6xl mx-auto">
+                        <AdminDashboard />
+                    </div>
+                </main>
+            ) : (
+                <main className="flex-1 overflow-y-auto px-4 md:px-0 py-8 space-y-8 scroll-smooth" ref={scrollContainerRef}>
+                    <div className="max-w-4xl mx-auto space-y-8">
+                        <div ref={topSentinelRef} className="h-4 w-full flex justify-center items-center">
+                            {isOldHistoryLoading && (
+                                <div className="flex gap-1 py-4">
+                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
+                                </div>
+                            )}
+                        </div>
+                        {mode === 'handwriting' && messages.length === 0 && (
+                            <div className="text-center py-12 px-6 bg-white/20 dark:bg-white/5 rounded-3xl border border-black/5 dark:border-white/5 backdrop-blur-sm shadow-sm">
+                                <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
+                                    <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                </div>
+                                <h2 className="text-2xl font-bold text-black dark:text-white mb-2 leading-tight">Handwriting to Text OCR</h2>
+                                <p className="text-gray-500 dark:text-gray-400 max-w-sm mx-auto font-medium">Upload up to 10 photos and I will transcribe them with high precision.</p>
                             </div>
                         )}
-                    </div>
-                    {mode === 'handwriting' && messages.length === 0 && (
-                        <div className="text-center py-12 px-6 bg-white/20 dark:bg-white/5 rounded-3xl border border-black/5 dark:border-white/5 backdrop-blur-sm shadow-sm">
-                            <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
-                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                            </div>
-                            <h2 className="text-2xl font-bold text-black dark:text-white mb-2 leading-tight">Handwriting to Text OCR</h2>
-                            <p className="text-gray-500 dark:text-gray-400 max-w-sm mx-auto font-medium">Upload up to 10 photos and I will transcribe them with high precision.</p>
-                        </div>
-                    )}
 
-                    {messages.length === 0 && mode !== 'handwriting' && (
-                        <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4">
-                            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-black rounded-full flex items-center justify-center shadow-xl mb-6 sm:mb-8 overflow-hidden">
-                                <img src="/logo.svg" alt="Sam Software Logo" className="w-10 h-10 sm:w-12 sm:h-12" />
-                            </div>
-                            <h2 className="text-[28px] xs:text-3xl sm:text-4xl font-extrabold text-black dark:text-white tracking-tighter mb-4 text-center leading-tight">Software Challenge Solver.</h2>
-                            <p className="text-base sm:text-lg text-gray-500 dark:text-gray-400 font-medium text-center max-w-md px-2">Military-grade AI partner for code, essays, and handwriting.</p>
-
-                            <div className="grid grid-cols-2 gap-2 sm:gap-4 mt-8 sm:mt-12 w-full max-w-lg px-2 sm:px-4 lg:hidden">
-                                {(['general', 'code', 'essay', 'handwriting'] as const).map(m => (
-                                    <button
-                                        key={m}
-                                        onClick={() => setMode(m)}
-                                        className={`py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold uppercase tracking-tighter transition-all flex items-center justify-center gap-2 border-2 ${mode === m
-                                            ? 'bg-black text-white border-black shadow-lg scale-105'
-                                            : 'bg-white dark:bg-white/5 text-gray-400 border-gray-100 dark:border-white/10 hover:border-gray-200'
-                                            }`}
-                                    >
-                                        <span className="text-[9px] sm:text-[10px]">{m}</span>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {messages.map((msg, idx) => (
-                        <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                            <div className={`max-w-[92%] md:max-w-[85%] rounded-[2rem] p-5 md:p-8 shadow-md transition-all ${msg.role === 'user'
-                                ? 'bg-[#141413] text-white rounded-br-md border border-white/5'
-                                : 'bg-white dark:bg-[#1A1A1A] text-black dark:text-white border border-black/5 dark:border-white/10 rounded-bl-md'
-                                }`}>
-
-                                {msg.role === 'model' && (
-                                    <div className="flex items-center gap-2 mb-4 opacity-50">
-                                        <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                                        <span className="text-[9px] font-black uppercase tracking-[0.2em]">Military Grade Output</span>
-                                    </div>
-                                )}
-
-                                {msg.files && msg.files.length > 0 && (
-                                    <div className="flex flex-wrap gap-2 mb-4">
-                                        {msg.files.map((file, fIdx) => (
-                                            <div key={fIdx} className="w-20 h-20 rounded-xl overflow-hidden shadow-md border-2 border-white/20 dark:border-white/10 bg-black/5 relative group transition-transform hover:scale-105 cursor-pointer">
-                                                {file.mimeType === 'application/pdf' ? (
-                                                    <div className="w-full h-full flex flex-col items-center justify-center bg-white text-red-600">
-                                                        <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
-                                                        <span className="text-[10px] font-black mt-1 uppercase tracking-widest">PDF</span>
-                                                    </div>
-                                                ) : (
-                                                    <img src={`data:${file.mimeType};base64,${file.data}`} alt="attachment" className="w-full h-full object-cover" />
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {msg.role === 'model' ? (
-                                    <>
-                                        <div className="prose prose-neutral dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/90 prose-pre:border prose-pre:border-white/10 prose-code:text-blue-500 dark:prose-code:text-blue-400 text-black dark:text-white">
-                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-                                        </div>
-                                        <MessageActions text={msg.text} />
-                                    </>
-                                ) : (
-                                    <p className="whitespace-pre-wrap text-sm md:text-base font-medium leading-relaxed tracking-tight text-white">{msg.text}</p>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-
-                    {isLoading && (
-                        <div className="flex justify-start animate-in fade-in slide-in-from-bottom-1 duration-500">
-                            <div className="bg-white/50 dark:bg-white/5 border border-black/5 dark:border-white/5 rounded-3xl px-6 py-4 shadow-sm flex items-center gap-4 text-[#141413] dark:text-gray-400">
-                                <div className="flex gap-1">
-                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></div>
+                        {messages.length === 0 && mode !== 'handwriting' && (
+                            <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4">
+                                <div className="w-16 h-16 sm:w-20 sm:h-20 bg-black rounded-full flex items-center justify-center shadow-xl mb-6 sm:mb-8 overflow-hidden">
+                                    <img src="/logo.svg" alt="Sam Software Logo" className="w-10 h-10 sm:w-12 sm:h-12" />
                                 </div>
-                                <span className="text-xs font-bold uppercase tracking-widest ">Thinking</span>
+                                <h2 className="text-[28px] xs:text-3xl sm:text-4xl font-extrabold text-black dark:text-white tracking-tighter mb-4 text-center leading-tight">Software Challenge Solver.</h2>
+                                <p className="text-base sm:text-lg text-gray-500 dark:text-gray-400 font-medium text-center max-w-md px-2">Military-grade AI partner for code, essays, and handwriting.</p>
+
+                                <div className="grid grid-cols-2 gap-2 sm:gap-4 mt-8 sm:mt-12 w-full max-w-lg px-2 sm:px-4 lg:hidden">
+                                    {(['general', 'code', 'essay', 'handwriting'] as const).map(m => (
+                                        <button
+                                            key={m}
+                                            onClick={() => setMode(m)}
+                                            className={`py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold uppercase tracking-tighter transition-all flex items-center justify-center gap-2 border-2 ${mode === m
+                                                ? 'bg-black text-white border-black shadow-lg scale-105'
+                                                : 'bg-white dark:bg-white/5 text-gray-400 border-gray-100 dark:border-white/10 hover:border-gray-200'
+                                                }`}
+                                        >
+                                            <span className="text-[9px] sm:text-[10px]">{m}</span>
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
-                        </div>
-                    )}
-                    <div ref={messagesEndRef} />
-                </div>
-            </main>
+                        )}
+
+                        {messages.map((msg, idx) => (
+                            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                                <div className={`max-w-[92%] md:max-w-[85%] rounded-[2rem] p-5 md:p-8 shadow-md transition-all ${msg.role === 'user'
+                                    ? 'bg-[#141413] text-white rounded-br-md border border-white/5'
+                                    : 'bg-white dark:bg-[#1A1A1A] text-black dark:text-white border border-black/5 dark:border-white/10 rounded-bl-md'
+                                    }`}>
+
+                                    {msg.role === 'model' && (
+                                        <div className="flex items-center gap-2 mb-4 opacity-50">
+                                            <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
+                                            <span className="text-[9px] font-black uppercase tracking-[0.2em]">Military Grade Output</span>
+                                        </div>
+                                    )}
+
+                                    {msg.files && msg.files.length > 0 && (
+                                        <div className="flex flex-wrap gap-2 mb-4">
+                                            {msg.files.map((file, fIdx) => (
+                                                <div key={fIdx} className="w-20 h-20 rounded-xl overflow-hidden shadow-md border-2 border-white/20 dark:border-white/10 bg-black/5 relative group transition-transform hover:scale-105 cursor-pointer">
+                                                    {file.mimeType === 'application/pdf' ? (
+                                                        <div className="w-full h-full flex flex-col items-center justify-center bg-white text-red-600">
+                                                            <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
+                                                            <span className="text-[10px] font-black mt-1 uppercase tracking-widest">PDF</span>
+                                                        </div>
+                                                    ) : (
+                                                        <img src={`data:${file.mimeType};base64,${file.data}`} alt="attachment" className="w-full h-full object-cover" />
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {msg.role === 'model' ? (
+                                        <>
+                                            <div className="prose prose-neutral dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/90 prose-pre:border prose-pre:border-white/10 prose-code:text-blue-500 dark:prose-code:text-blue-400 text-black dark:text-white">
+                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+                                            </div>
+                                            <MessageActions text={msg.text} />
+                                        </>
+                                    ) : (
+                                        <p className="whitespace-pre-wrap text-sm md:text-base font-medium leading-relaxed tracking-tight text-white">{msg.text}</p>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+
+                        {isLoading && (
+                            <div className="flex justify-start animate-in fade-in slide-in-from-bottom-1 duration-500">
+                                <div className="bg-white/50 dark:bg-white/5 border border-black/5 dark:border-white/5 rounded-3xl px-6 py-4 shadow-sm flex items-center gap-4 text-[#141413] dark:text-gray-400">
+                                    <div className="flex gap-1">
+                                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></div>
+                                    </div>
+                                    <span className="text-xs font-bold uppercase tracking-widest ">Thinking</span>
+                                </div>
+                            </div>
+                        )}
+                        <div ref={messagesEndRef} />
+                    </div>
+                </main>
+            )}
 
             <footer className="bg-white/80 dark:bg-black/50 backdrop-blur-xl border-t border-gray-200/50 dark:border-white/10 p-4 md:p-6 shrink-0 transition-all">
                 <div className="max-w-4xl mx-auto">
