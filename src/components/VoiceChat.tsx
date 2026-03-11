@@ -32,10 +32,23 @@ export default function VoiceChat() {
                 socketRef.current?.send(JSON.stringify(setup));
             };
 
+            socketRef.current.onerror = (err) => {
+                console.error('Voice WebSocket error:', err);
+                setIsConnecting(false);
+                setIsActive(false);
+            };
+
+            socketRef.current.onclose = () => {
+                console.log('Voice link closed');
+                setIsConnecting(false);
+                setIsActive(false);
+            };
+
             mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
         } catch (err) {
             console.error('Voice session failed:', err);
             setIsConnecting(false);
+            setIsActive(false);
         }
     };
 

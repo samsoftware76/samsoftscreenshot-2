@@ -123,10 +123,7 @@ export default function App() {
                 const { data } = await supabase.functions.invoke('chat', { body: { action: 'get-sessions' } });
                 if (data?.sessions) {
                     setSessions(data.sessions);
-                    if (data.sessions.length > 0 && !currentSessionId) {
-                        setCurrentSessionId(data.sessions[0].id);
-                        setMode(data.sessions[0].mode || 'general');
-                    }
+                    // Keep currentSessionId null to start with "New Chat" logic
                 }
             };
             loadSessions();
@@ -292,27 +289,14 @@ export default function App() {
         setCurrentSolution(null);
     };
 
-    const createNewChat = async (targetMode: AnalysisMode = 'general') => {
-        setIsLoading(true);
-        try {
-            const { data, error } = await supabase.functions.invoke('chat', {
-                body: { action: 'create-session', mode: targetMode, title: `New ${targetMode} Solve` }
-            });
-            if (error) throw error;
-            if (data?.id) {
-                setSessions(prev => [data, ...prev]);
-                setCurrentSessionId(data.id);
-                setMode(targetMode);
-                setMessages([]);
-                setCurrentSolution(null);
-                setSidebarOpen(false);
-            }
-        } catch (err) {
-            console.error('Create session error:', err);
-            setError('Failed to create new chat');
-        } finally {
-            setIsLoading(false);
-        }
+    const startNewChat = (targetMode: AnalysisMode = 'general') => {
+        setCurrentSessionId(null);
+        setMessages([]);
+        setCurrentSolution(null);
+        setMode(targetMode);
+        setSidebarOpen(false);
+        setShowWelcome(true);
+        setError(null);
     };
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -418,6 +402,16 @@ export default function App() {
             const aiText = data.text;
             setMessages(prev => [...prev, { role: 'model', text: aiText }]);
 
+            // Update sidebar (bump to top)
+            setSessions(prev => {
+                const existing = prev.find(s => s.id === activeSessionId);
+                const others = prev.filter(s => s.id !== activeSessionId);
+                if (existing) {
+                    return [{ ...existing, created_at: new Date().toISOString() }, ...others];
+                }
+                return prev;
+            });
+
             if (mode === 'code' || mode === 'essay') {
                 parseAndSetSolution(aiText);
             }
@@ -479,11 +473,11 @@ export default function App() {
             <aside className={`${sidebarOpen ? 'w-80' : 'w-0'} bg-white dark:bg-[#111] border-r border-black/5 dark:border-white/10 transition-all duration-300 flex flex-col z-40 fixed lg:relative h-full group overflow-hidden`}>
                 <div className="p-6 flex flex-col h-full w-80">
                     <button
-                        onClick={() => createNewChat(mode)}
+                        onClick={() => startNewChat(mode)}
                         className="w-full py-3 bg-black dark:bg-white text-white dark:text-black rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl hover:scale-[1.02] active:scale-95 transition-all mb-8 flex items-center justify-center gap-2"
                     >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
-                        New Solve
+                        New Chat
                     </button>
 
                     <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
@@ -491,7 +485,11 @@ export default function App() {
                         {sessions.map(s => (
                             <button
                                 key={s.id}
-                                onClick={() => { setCurrentSessionId(s.id); setSidebarOpen(false); }}
+                                onClick={() => {
+                                    setCurrentSessionId(s.id);
+                                    setMode(s.mode || 'general');
+                                    setSidebarOpen(false);
+                                }}
                                 className={`w-full p-4 rounded-2xl text-left transition-all flex flex-col gap-1 border-2 ${currentSessionId === s.id
                                     ? 'bg-black dark:bg-white text-white dark:text-black border-transparent shadow-xl'
                                     : 'border-transparent hover:bg-black/5 dark:hover:bg-white/5 text-gray-500'
@@ -610,7 +608,7 @@ export default function App() {
                             <AdminDashboard />
                         </div>
                     </main>
-                ) : (mode === 'code' || mode === 'essay') && currentSolution ? (
+                ) : (mode === 'code' || mode === 'essay') ? (
                     <main className="flex-1 flex flex-col md:flex-row h-full overflow-hidden">
                         {/* Left: Capture & Interaction */}
                         <div className="w-full md:w-1/3 border-r border-black/5 dark:border-white/10 overflow-y-auto p-6 md:p-8 bg-black/[0.02] space-y-8 flex flex-col">
@@ -620,17 +618,51 @@ export default function App() {
                                     <p className="text-xs text-gray-500 font-bold uppercase tracking-widest">Update context with new captures</p>
                                 </div>
 
-                                <div className="flex flex-col gap-4 p-6 bg-white dark:bg-[#1A1A1A] rounded-[2rem] border border-black/5 dark:border-white/10 shadow-xl">
+                                <div className="grid grid-cols-2 gap-4 p-6 bg-white dark:bg-[#1A1A1A] rounded-[2rem] border border-black/5 dark:border-white/10 shadow-xl">
+                                    <div className="relative group">
+                                        <input
+                                            type="file"
+                                            accept="image/*,application/pdf"
+                                            multiple
+                                            onChange={handleFileUpload}
+                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                            disabled={isLoading || attachments.length >= 10}
+                                        />
+                                        <button type="button" className="w-full py-4 bg-gray-100 dark:bg-white/5 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-black dark:hover:bg-white hover:text-white dark:hover:text-black transition-all flex flex-col items-center gap-2">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                                            Files
+                                        </button>
+                                    </div>
+                                    <div className="relative group">
+                                        <input
+                                            type="file"
+                                            accept="image/*"
+                                            capture="environment"
+                                            onChange={handleFileUpload}
+                                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                            disabled={isLoading || attachments.length >= 10}
+                                        />
+                                        <button type="button" className="w-full py-4 bg-gray-100 dark:bg-white/5 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-green-600 hover:text-white transition-all flex flex-col items-center gap-2">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                            Camera
+                                        </button>
+                                    </div>
                                     <ScreenshotCapture onCapture={handleCapture} onError={setError} />
                                     <WebcamCapture onCapture={handleCapture} onError={setError} />
                                 </div>
 
                                 <div className="space-y-4">
-                                    {messages.filter(m => m.role === 'user').slice(-1).map((msg, idx) => (
-                                        <div key={idx} className="p-6 bg-black dark:bg-white text-white dark:text-black rounded-[2rem] font-medium text-sm italic opacity-80 backdrop-blur-xl">
-                                            "{msg.text}"
+                                    {messages.length === 0 ? (
+                                        <div className="p-6 bg-white/50 dark:bg-white/5 rounded-[2rem] border border-black/5 dark:border-white/10 text-center animate-in fade-in duration-500">
+                                            <p className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] leading-relaxed">Initialized & Ready<br />Capture or type to begin</p>
                                         </div>
-                                    ))}
+                                    ) : (
+                                        messages.filter(m => m.role === 'user').slice(-1).map((msg, idx) => (
+                                            <div key={idx} className="p-6 bg-black dark:bg-white text-white dark:text-black rounded-[2rem] font-medium text-sm italic opacity-80 shadow-lg animate-in slide-in-from-left-2 duration-300">
+                                                "{msg.text}"
+                                            </div>
+                                        ))
+                                    )}
                                 </div>
                             </div>
 
@@ -659,7 +691,17 @@ export default function App() {
 
                         {/* Right: Solution Intelligence */}
                         <div className="flex-1 overflow-y-auto p-6 md:p-8 custom-scrollbar bg-[#FCF1E922] dark:bg-[#00000022]">
-                            <SolutionSteps {...currentSolution} />
+                            {currentSolution ? (
+                                <SolutionSteps {...currentSolution} />
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-center p-8 bg-white/20 dark:bg-white/5 rounded-[2rem] border border-black/5 dark:border-white/10 backdrop-blur-sm">
+                                    <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mb-6 shadow-xl animate-pulse">
+                                        <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                    </div>
+                                    <h3 className="text-xl font-bold text-black dark:text-white mb-2 uppercase tracking-tighter">Waiting for Intelligence</h3>
+                                    <p className="text-gray-500 dark:text-gray-400 max-w-xs font-medium">Capture a screenshot or describe your challenge to generate a solution.</p>
+                                </div>
+                            )}
                         </div>
                     </main>
                 ) : (
