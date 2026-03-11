@@ -170,18 +170,26 @@ serve(async (req) => {
       }
     }
 
-    // Call Gemini (Latest v1beta for robustness as per senseai)
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+    // Call Gemini (Matching SenseAI logic exactly: gemini-2.5-flash + search)
+    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents,
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: { maxOutputTokens: 4096 }
+        system_instruction: { parts: { text: systemPrompt } },
+        generationConfig: { maxOutputTokens: 4096 },
+        tools: [{ google_search: {} }]
       }),
     });
 
-    if (!geminiRes.ok) throw new Error(`Gemini API error: ${geminiRes.status}`);
+    if (geminiRes.status === 429) {
+      throw new Error('GEMINI_RATE_LIMIT_EXCEEDED: SenseAI limits reached. Please wait a minute before trying again.');
+    }
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      throw new Error(`Gemini API error: ${geminiRes.status} ${errText}`);
+    }
 
     const resData = await geminiRes.json();
     const aiText = resData.candidates?.[0]?.content?.parts?.[0]?.text || '';
