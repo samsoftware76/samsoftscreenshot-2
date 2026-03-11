@@ -30,15 +30,14 @@ serve(async (req) => {
       global: { headers: { Authorization: authHeader } }
     });
 
-    // Validate user
-    const token = authHeader.replace('Bearer ', '');
-    const { data: claimsData, error: claimsError } = await supabaseClient.auth.getClaims(token);
-    if (claimsError || !claimsData?.claims) {
+    // Validate user using getUser
+    const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
+    if (userError || !user) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
-    const userId = claimsData.claims.sub as string;
+    const userId = user.id;
 
     let body: any = {};
     try {
@@ -97,7 +96,6 @@ serve(async (req) => {
       { role: 'system', content: systemPrompt }
     ];
 
-    // Use the client messages for context
     for (const m of clientMessages) {
       const role = (m.role === 'model' || m.role === 'assistant') ? 'assistant' : 'user';
       const content: any[] = [];
@@ -107,7 +105,6 @@ serve(async (req) => {
         content.push({ type: 'text', text: textContent });
       }
 
-      // Add image attachments if present
       if (m.files && Array.isArray(m.files) && m.files.length > 0) {
         for (const f of m.files) {
           content.push({
@@ -125,7 +122,7 @@ serve(async (req) => {
       });
     }
 
-    // Call Lovable AI Gateway
+    // Call Lovable AI Gateway (serves Gemini models)
     const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: {
