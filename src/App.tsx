@@ -467,8 +467,16 @@ export default function App() {
 
     return (
         <div className="flex h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] font-sans transition-colors duration-300 overflow-hidden">
+            {/* Multi-Chat Sidebar Overlay for Mobile */}
+            {sidebarOpen && (
+                <div
+                    className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 lg:hidden"
+                    onClick={() => setSidebarOpen(false)}
+                />
+            )}
+
             {/* Multi-Chat Sidebar */}
-            <aside className={`${sidebarOpen ? 'w-80' : 'w-0'} bg-white dark:bg-[#111] border-r border-black/5 dark:border-white/10 transition-all duration-300 flex flex-col z-40 relative group overflow-hidden`}>
+            <aside className={`${sidebarOpen ? 'w-80' : 'w-0'} bg-white dark:bg-[#111] border-r border-black/5 dark:border-white/10 transition-all duration-300 flex flex-col z-40 fixed lg:relative h-full group overflow-hidden`}>
                 <div className="p-6 flex flex-col h-full w-80">
                     <button
                         onClick={() => createNewChat(mode)}
