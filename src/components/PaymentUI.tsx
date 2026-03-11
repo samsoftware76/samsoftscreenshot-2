@@ -12,36 +12,28 @@ export default function PaymentUI({ session }: { session: Session }) {
         setLoading(true);
         setError(null);
         try {
-            // 1. Register IPN (In a real app, this might be pre-registered or handled differently)
-            const ipnRes = await supabase.functions.invoke('pesapal', {
-                method: 'POST',
-                body: {
-                    action: 'register-ipn',
-                    ipn_url: `${window.location.origin}/api/pesapal-ipn`
-                }
-            });
-
-            if (ipnRes.error) throw ipnRes.error;
-            const { ipn_id } = ipnRes.data;
-
-            // 2. Submit Order
-            const orderRes = await supabase.functions.invoke('pesapal', {
-                method: 'POST',
+            // Submit Order directly (IPN is handled via Supabase Secrets "No Shortcuts" way)
+            const { data, error: fnError } = await supabase.functions.invoke('pesapal', {
                 body: {
                     action: 'submit-order',
                     order_id: crypto.randomUUID(),
+                    amount: 10,
+                    currency: 'USD',
                     email: session.user.email,
-                    ipn_id: ipn_id,
+                    firstName: session.user.email?.split('@')[0] || 'User',
+                    lastName: '',
+                    description: 'Military Grade Premium Subscription',
                     callback_url: window.location.origin,
-                    first_name: session.user.email?.split('@')[0],
                 }
             });
 
-            if (orderRes.error) throw orderRes.error;
-            if (orderRes.data?.redirect_url) {
-                window.location.href = orderRes.data.redirect_url;
+            if (fnError) throw fnError;
+
+            if (data?.redirect_url) {
+                window.location.href = data.redirect_url;
             } else {
-                throw new Error('No redirect URL received from Pesapal');
+                console.error('Pesapal response error:', data);
+                throw new Error(data?.error || 'No redirect URL received from Pesapal');
             }
         } catch (err: any) {
             console.error('Payment error:', err);
