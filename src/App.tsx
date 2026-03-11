@@ -111,7 +111,7 @@ export default function App() {
     useEffect(() => {
         if (session) {
             const checkAdminAndCredits = async () => {
-                const { data }: any = await supabase.from('profiles').select('is_admin, credits').eq('id', session.user.id).single();
+                const { data }: any = await supabase.from('profiles').select('is_admin, credits').eq('id', session.user.id).maybeSingle();
                 if (data) {
                     if (data.is_admin) setIsAdmin(true);
                     setCredits(data.credits);
@@ -136,7 +136,7 @@ export default function App() {
                         setHasMore(data.hasMore);
                     }
                     // Update credits after sending/receiving
-                    const { data: profile } = await supabase.from('profiles').select('credits').eq('id', session.user.id).single();
+                    const { data: profile } = await supabase.from('profiles').select('credits').eq('id', session.user.id).maybeSingle();
                     if (profile) setCredits(profile.credits);
                 } catch (err) {
                     console.error('Initial load error:', err);
