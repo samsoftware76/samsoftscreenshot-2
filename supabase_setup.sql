@@ -13,6 +13,12 @@ BEGIN
         ALTER TABLE public.profiles ADD COLUMN credits INTEGER DEFAULT 10;
     END IF;
 
+    -- Profiles Backfill (Create rows for existing auth.users)
+    INSERT INTO public.profiles (id, email, full_name)
+    SELECT id, email, raw_user_meta_data->>'full_name'
+    FROM auth.users
+    ON CONFLICT (id) DO NOTHING;
+
     -- Chat Messages Missing Columns
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='chat_messages' AND column_name='organization_id') THEN
         ALTER TABLE public.chat_messages ADD COLUMN organization_id UUID;

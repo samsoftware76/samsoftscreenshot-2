@@ -75,14 +75,22 @@ serve(async (req) => {
     const organizationId = membership.organization_id;
     console.log(`Action: ${action}, Org: ${organizationId}, User: ${user.id}`);
 
-    // 4. Credit Check
+    // 4. Credit Check (Idempotent: Ensure profile exists)
     const { data: profile, error: profileError } = await serviceRoleClient
       .from('profiles')
+      .upsert({
+        id: user.id,
+        email: user.email,
+        full_name: user.user_metadata?.full_name || user.email?.split('@')[0]
+      }, { onConflict: 'id' })
       .select('credits')
-      .eq('id', user.id)
       .single();
 
-    if (profileError || !profile) throw new Error('Could not verify credits');
+    if (profileError || !profile) {
+      console.error('Profile Upsert/Fetch Error:', profileError);
+      throw new Error(`Could not verify credits: ${profileError?.message || 'Unknown error'}`);
+    }
+
     if (profile.credits <= 0) {
       return new Response(JSON.stringify({ error: 'INSUFFICIENT_CREDITS', message: 'You have depleted your credits. Please upgrade to continue.' }), {
         status: 403,
