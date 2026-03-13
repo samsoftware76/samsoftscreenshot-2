@@ -6,14 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v8.0] Hyper-Resilient Engine Loaded.");
-
-function getSystemPrompt(mode: string): string {
-  if (mode === 'code') return `You are the "Elite Challenge Solver". Provide COMPLETE WORKING CODE.`;
-  if (mode === 'essay') return `You are the "Elite Essay Assistant". Write original human-like content.`;
-  if (mode === 'handwriting') return `You are the "Master OCR Engine". Transcribe text exactly.`;
-  return `You are the "Military-Grade AI Partner". Analyze input and provide professional assistance.`;
-}
+console.log("[STABILIZER v10.0] Proof-Verified Engine Active.");
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -22,113 +15,92 @@ serve(async (req: Request) => {
     const authHeader = req.headers.get('Authorization');
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    
-    if (!authHeader || !supabaseUrl || !supabaseServiceKey) throw new Error("Missing Core Secrets");
+
+    if (!authHeader || !supabaseUrl || !supabaseServiceKey) throw new Error("Missing Secrets");
 
     const supabase = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, { global: { headers: { Authorization: authHeader } } });
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error("Unauthorized");
+    if (!user) throw new Error('Unauthorized');
 
     const body = await req.json().catch(() => ({}));
     const { action, messages, mode, sessionId } = body;
 
-    // --- Action: Ping (v8.0) ---
+    // --- Action: Ping (v10.0) ---
     if (action === 'ping') {
-      return new Response(JSON.stringify({ 
-        status: 'ok', 
-        version: '8.0', 
-        multimodal: true, 
-        discovery: true,
-        keys: !!Deno.env.get('GEMINI_API_KEY') 
-      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ status: 'ok', version: '10.0', discovery: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
     }
 
-    // --- Action: Chat ---
-    if (!messages) throw new Error("No messages");
-    const lastMsg = messages[messages.length - 1];
+    // --- AI Configuration ---
+    const apiKeys = [Deno.env.get('GEMINI_API_KEY'), Deno.env.get('GEMINI_KEY_2'), Deno.env.get('GEMINI_KEY_3'), Deno.env.get('GOOGLEAI_API_KEY')].filter(Boolean);
+    
+    // VERIFIED MODELS FROM TERMINAL DISCOVERY
+    const models = [
+      'gemini-flash-latest', 
+      'gemini-2.0-flash', 
+      'gemini-2.5-flash', 
+      'gemini-pro-latest',
+      'gemini-1.5-flash', // Fallback
+      'gemini-1.5-pro'    // Fallback
+    ];
 
-    const apiKeys = [
-      Deno.env.get('GEMINI_API_KEY'),
-      Deno.env.get('GEMINI_KEY_2'),
-      Deno.env.get('GEMINI_KEY_3'),
-      Deno.env.get('GOOGLEAI_API_KEY')
-    ].filter(Boolean);
-
+    const endpoints = ['v1beta', 'v1']; 
     let aiText = '';
-    let firstFail: any = null;
-
-    // Absolute broadest model targets
-    const modelOptions = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro'];
-    const endpoints = ['v1', 'v1beta'];
+    let firstFail = null;
 
     for (const key of apiKeys) {
       if (aiText) break;
       for (const endpoint of endpoints) {
         if (aiText) break;
-        for (const modelId of modelOptions) {
+        for (const model of models) {
           try {
-            // Skip text-only engines if images are present
-            if (modelId === 'gemini-pro' && lastMsg.files?.length > 0) continue;
-
             const payload = {
               contents: messages.map((m: any, i: number) => {
                 let role = (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user';
                 let parts: any[] = [];
                 let text = m.text || m.content || m.parts?.[0]?.text || '';
-                
-                if (i === 0 && role === 'user') {
-                  text = `[STRICT-SYSTEM-INSTRUCTION: ${getSystemPrompt(mode)}]\n\nUSER INPUT: ${text}`;
-                }
+                if (i === 0 && role === 'user') text = `[INSTRUCTION: Act as Ask Connie AI]\n\nUSER: ${text}`;
                 if (text) parts.push({ text });
 
                 if (role === 'user' && m.files?.length > 0) {
                   m.files.forEach((f: any) => {
                     if (f.data && f.mimeType) {
-                      parts.push({ inline_data: { mime_type: f.mimeType, data: f.data } });
+                       parts.push({ inline_data: { mime_type: f.mimeType, data: f.data } });
                     }
                   });
                 }
                 return { role, parts };
-              }).filter((c: any) => c.parts.length > 0)
+              })
             };
 
-            const url = `https://generativelanguage.googleapis.com/${endpoint}/models/${modelId}:generateContent?key=${key}`;
-            const res = await fetch(url, {
+            const res = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models/${model}:generateContent?key=${key}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
+              body: JSON.stringify(payload),
             });
 
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v8.0] ${modelId}@${endpoint}:`, errTxt);
-              if (!firstFail) firstFail = { status: res.status, body: errTxt, model: modelId, endpoint };
+              console.error(`[FAIL v10.0] ${model}@${endpoint}:`, errTxt);
+              if (!firstFail) firstFail = { status: res.status, body: errTxt, model, endpoint };
               continue;
             }
 
-            const data = await res.json();
-            aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const d = await res.json();
+            aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
-          } catch (err: any) {
-            if (!firstFail) firstFail = { error: err.message };
-          }
+          } catch (err) { if (!firstFail) firstFail = err; }
         }
       }
     }
 
-    if (!aiText) {
-       throw new Error(`AI Engines Exhausted. [v8.0 DIAGNOSIS]: ${JSON.stringify(firstFail)}`);
-    }
+    if (!aiText) throw new Error(`AI Engines Exhausted. Diagnosis: ${JSON.stringify(firstFail)}`);
 
     if (sessionId) {
-      await adminClient.from('chat_messages').insert({
-        user_id: user.id,
-        session_id: sessionId,
-        role: 'assistant',
-        content: aiText
-      });
+      await adminClient.from('chat_messages').insert({ user_id: user.id, session_id: sessionId, role: 'assistant', content: aiText });
       await adminClient.rpc('decrement_credits', { user_id: user.id });
     }
 
