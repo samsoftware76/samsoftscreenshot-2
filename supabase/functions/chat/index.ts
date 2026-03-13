@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v11.0] Super Discovery Active.");
+console.log("[STABILIZER v11.1] Discovery + Static Fallback Active.");
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -29,12 +29,14 @@ serve(async (req: Request) => {
 
     // --- Key Management ---
     const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
+    const diagnostics: any = {};
+    keysToCheck.forEach(k => { diagnostics[k] = !!Deno.env.get(k); });
     const rawKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
     const apiKeys = [...new Set(rawKeys)];
 
-    // --- Action: Ping (v11.0) ---
+    // --- Action: Ping (v11.1) ---
     if (action === 'ping') {
-      return new Response(JSON.stringify({ status: 'ok', version: '11.0', uniqueKeys: apiKeys.length }), {
+      return new Response(JSON.stringify({ status: 'ok', version: '11.1', uniqueKeys: apiKeys.length, diagnostics }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
@@ -69,14 +71,13 @@ serve(async (req: Request) => {
       if (aiText) break;
       if (deadKeys.has(key)) continue;
 
-      // v11.0: Real-time Discovery per key
-      let discoveredModels: string[] = [];
-      const endpoints = ['v1beta', 'v1'];
+      const endpoints = ['v1', 'v1beta'];
       
       for (const endpoint of endpoints) {
         if (aiText) break;
         
         // 1. DISCOVER: Ask Google what models are alive for THIS key/endpoint
+        let discoveredModels: string[] = [];
         try {
           const dResp = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models?key=${key}`);
           const dData = await dResp.json();
@@ -84,20 +85,28 @@ serve(async (req: Request) => {
             discoveredModels = dData.models
               .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
               .map((m: any) => m.name);
-            console.log(`[DISCOVERY] Found ${discoveredModels.length} models for key ${key.substring(0,6)}... at ${endpoint}`);
           }
-        } catch (e) {
+        } catch (e: any) {
           console.warn(`[DISCOVERY FAIL] key ${key.substring(0,6)}... at ${endpoint}: ${e.message}`);
         }
 
-        // 2. PRIORITIZE: Flash first, then others
-        const sortedModels = [
-          ...discoveredModels.filter(m => m.includes('flash')),
-          ...discoveredModels.filter(m => !m.includes('flash'))
+        // 2. STATIC FALLBACK: If discovery failed, use a verified list
+        const staticList = [
+          'models/gemini-1.5-flash',
+          'models/gemini-1.5-flash-latest',
+          'models/gemini-1.5-flash-001',
+          'models/gemini-1.5-flash-002',
+          'models/gemini-1.5-flash-8b',
+          'models/gemini-1.0-pro',
+          'models/gemini-pro',
+          'models/gemini-1.5-pro'
         ];
 
-        // 3. ATTEMPT: Try each discovered model
-        for (const fullModelName of sortedModels) {
+        // Combine and deduplicate
+        const modelsToTry = [...new Set([...discoveredModels, ...staticList])];
+
+        // 3. ATTEMPT: Try each model
+        for (const fullModelName of modelsToTry) {
           try {
             const payload = {
               contents: messages.map((m: any, i: number) => {
@@ -120,11 +129,11 @@ serve(async (req: Request) => {
 
             if (!res.ok) {
               const errSnippet = JSON.stringify(resJson).substring(0, 150);
-              console.error(`[FAIL v11.0] ${fullModelName}@${endpoint}: Status ${status}`);
+              console.error(`[FAIL v11.1] ${fullModelName}@${endpoint}: Status ${status}`);
               allAttempts.push({ model: fullModelName, endpoint, status, error: errSnippet });
               
               if (status === 429 && JSON.stringify(resJson).includes("limit: 0")) {
-                console.warn(`[DEAD KEY] Key exhausted. Skipping key.`);
+                console.warn(`[DEAD KEY] Key exhausted. Skipping.`);
                 deadKeys.add(key);
                 break; 
               }
@@ -135,7 +144,7 @@ serve(async (req: Request) => {
             if (aiText) break;
             else allAttempts.push({ model: fullModelName, endpoint, status, error: "Empty result" });
 
-          } catch (err) {
+          } catch (err: any) {
             allAttempts.push({ model: fullModelName, endpoint, status: 'EXC', error: err.message });
           }
         }
@@ -143,11 +152,11 @@ serve(async (req: Request) => {
     }
 
     if (!aiText) {
-      throw new Error(`AI Engines Exhausted. Attempted ${allAttempts.length} discovered models. Top Diagnosis: ${JSON.stringify(allAttempts[0] || "No Models Found")}`);
+      throw new Error(`AI Engines Exhausted. Attempted ${allAttempts.length} variations. Top Fail: ${JSON.stringify(allAttempts[0] || "No Models Found")}`);
     }
 
     if (sessionId) {
-      await adminClient.from('chat_messages').insert({ user_id: user.id, session_id: sessionId, role: 'assistant', content: aiText, metadata: { engine: 'stabilizer-v11.0' } });
+      await adminClient.from('chat_messages').insert({ user_id: user.id, session_id: sessionId, role: 'assistant', content: aiText, metadata: { engine: 'stabilizer-v11.1' } });
       await adminClient.rpc('decrement_credits', { user_id: user.id });
     }
 
