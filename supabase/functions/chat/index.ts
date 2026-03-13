@@ -31,14 +31,18 @@ serve(async (req: Request) => {
     const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
     const diagnostics: any = {};
     keysToCheck.forEach(k => { diagnostics[k] = !!Deno.env.get(k); });
-    const apiKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
+    
+    // v10.6: Deduplicate keys to avoid wasting quota on identical keys
+    const rawKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
+    const apiKeys = [...new Set(rawKeys)];
 
-    // --- Action: Ping (v10.3) ---
+    // --- Action: Ping (v10.6) ---
     if (action === 'ping') {
       return new Response(JSON.stringify({ 
         status: 'ok', 
-        version: '10.3', 
-        diagnostics 
+        version: '10.6', 
+        diagnostics,
+        uniqueKeys: apiKeys.length
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -92,15 +96,20 @@ serve(async (req: Request) => {
     }
 
     // --- Action: Chat (AI Logic) ---
-    // VERIFIED MODELS
+    // v10.6: Expanded model list for maximum reach
     const models = [
-      'gemini-2.0-flash', 
       'gemini-1.5-flash', 
-      'gemini-pro-latest'
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash-002',
+      'gemini-1.5-flash-8b',
+      'gemini-2.0-flash', 
+      'gemini-pro',
+      'gemini-pro-latest',
+      'gemini-1.5-pro'
     ];
     const endpoints = ['v1beta', 'v1'];
     let aiText = '';
-    let firstFail = null;
+    const allAttempts: any[] = [];
 
     for (const key of apiKeys) {
       if (aiText) break;
@@ -133,22 +142,29 @@ serve(async (req: Request) => {
               body: JSON.stringify(payload),
             });
 
+            const status = res.status;
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v10.3] ${model}@${endpoint}:`, errTxt);
-              if (!firstFail) firstFail = { status: res.status, body: errTxt, model, endpoint };
+              console.error(`[FAIL v10.6] ${model}@${endpoint}: Status ${status}`);
+              allAttempts.push({ model, endpoint, status, error: errTxt.substring(0, 100) });
               continue;
             }
 
             const d = await res.json();
             aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
-          } catch (err) { if (!firstFail) firstFail = err; }
+            else allAttempts.push({ model, endpoint, status, error: "No text candidates" });
+
+          } catch (err) { 
+            allAttempts.push({ model, endpoint, status: 'EXC', error: err.message });
+          }
         }
       }
     }
 
-    if (!aiText) throw new Error(`AI Engines Exhausted. Diagnosis: ${JSON.stringify(firstFail)}`);
+    if (!aiText) {
+      throw new Error(`AI Engines Exhausted. Attempted ${allAttempts.length} combinations. Top Error: ${JSON.stringify(allAttempts[0])}`);
+    }
 
     if (sessionId) {
       await adminClient.from('chat_messages').insert({ 
