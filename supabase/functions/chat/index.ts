@@ -177,17 +177,15 @@ serve(async (req: Request) => {
           try {
             if (endpoint === 'v1' && model === 'gemini-1.0-pro') continue;
 
-            console.log(`[DEBUG v4.0] Attempting: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            console.log(`[DEBUG v4.1] Omni-Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
             
             const systemPrompt = getSystemPrompt(mode || 'general');
-            // STRICT FIX: V1 endpoint NEVER supports system_instruction field
-            const useSystemField = endpoint === 'v1beta' && (model.includes('1.5') || model.includes('2.0'));
             
-            const payload: any = {
+            // OMNI-COMPATIBLE PAYLOAD: Prepend instructions to avoid "system_instruction" 400 errors
+            const payload = {
               contents: messages.map((m: any, i: number) => {
                 let text = m.text || m.content || '';
-                // If not using the specialized field, inject the prompt into the first user message
-                if (i === 0 && !useSystemField) {
+                if (i === 0) {
                    text = `[SYSTEM-INSTRUCTION: ${systemPrompt}]\n\nUser Question: ${text}`;
                 }
                 return {
@@ -196,10 +194,6 @@ serve(async (req: Request) => {
                 };
               })
             };
-
-            if (useSystemField) {
-              payload.system_instruction = { parts: { text: systemPrompt } };
-            }
 
             const res = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models/${model}:generateContent?key=${key}`, {
               method: 'POST',
