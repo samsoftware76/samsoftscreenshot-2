@@ -163,10 +163,10 @@ serve(async (req: Request) => {
     }
 
     let aiText = '';
-    let lastErrorDetails = null;
+    let firstErrorReason = null;
 
-    // Standard Model List with Stable Identifiers
-    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
+    // Standard Model List with LATEST identifiers
+    const models = ['gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-1.0-pro'];
     const endpoints = ['v1beta', 'v1']; 
 
     for (const [keyIdx, key] of apiKeys.entries()) {
@@ -175,23 +175,24 @@ serve(async (req: Request) => {
         if (aiText) break;
         for (const model of models) {
           try {
+            // gemini-1.0-pro is flaky on v1 in many regions
             if (endpoint === 'v1' && model === 'gemini-1.0-pro') continue;
 
-            console.log(`[DEBUG v4.1] Omni-Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            console.log(`[DEBUG v5.0] Deep Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
             
             const systemPrompt = getSystemPrompt(mode || 'general');
             
-            // OMNI-COMPATIBLE PAYLOAD: Prepend instructions to avoid "system_instruction" 400 errors
             const payload = {
               contents: messages.map((m: any, i: number) => {
-                let text = m.text || m.content || '';
-                if (i === 0) {
-                   text = `[SYSTEM-INSTRUCTION: ${systemPrompt}]\n\nUser Question: ${text}`;
+                let role = (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user';
+                let text = m.text || m.content || m.parts?.[0]?.text || '';
+                
+                // Embedded Instruction format (Most reliable across v1/v1beta)
+                if (i === 0 && role === 'user') {
+                   text = `[SYSTEM-INSTRUCTION: ${systemPrompt}]\n\nUSER PROMPT: ${text}`;
                 }
-                return {
-                  role: (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user',
-                  parts: [{ text }]
-                };
+                
+                return { role, parts: [{ text }] };
               })
             };
 
@@ -201,34 +202,27 @@ serve(async (req: Request) => {
               body: JSON.stringify(payload),
             });
 
-            if (res.status === 429) {
-              console.warn(`[WARN] Rate limit on Key #${keyIdx + 1}`);
-              break; // Skip to next key
-            }
+            if (res.status === 429) break; 
 
             if (!res.ok) {
-              const errData = await res.text();
-              console.error(`[DEBUG] ${endpoint}/${model} fail:`, errData);
-              lastErrorDetails = { status: res.status, body: errData, model, endpoint, keyIdx };
-              continue; // Try next model/endpoint
+              const errText = await res.text();
+              console.error(`[FAIL v5.0] ${model}@${endpoint}:`, errText);
+              if (!firstErrorReason) firstErrorReason = { status: res.status, body: errText, model, endpoint, keyIdx };
+              continue;
             }
 
             const d = await res.json();
             aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            if (aiText) {
-              console.log(`✅ [DEBUG] Success: ${model} on ${endpoint}`);
-              break;
-            }
+            if (aiText) break;
           } catch (err: any) {
-            console.error(`[DEBUG] Request crash:`, err.message);
-            lastErrorDetails = { error: err.message, model, endpoint };
+            if (!firstErrorReason) firstErrorReason = { error: err.message, model, endpoint };
           }
         }
       }
     }
 
     if (!aiText) {
-      throw new Error(`AI Engines exhausted. Last Error: ${JSON.stringify(lastErrorDetails)}`);
+      throw new Error(`AI Engines exhausted. Primary Diagnosis: ${JSON.stringify(firstErrorReason)}`);
     }
 
     if (sessionId) {
