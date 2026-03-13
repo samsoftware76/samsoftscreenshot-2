@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v6.0] Edge Function 'chat' module loaded successfully.");
+console.log("[STABILIZER v7.0] Edge Function 'chat' module loaded successfully.");
 
 function getSystemPrompt(mode: string): string {
   if (mode === 'code') return `You are the "Elite Challenge Solver". Provide the COMPLETE WORKING CODE SOLUTION. Detect the language. Format: description, code block, steps, hints, difficulty.`;
@@ -18,7 +18,7 @@ function getSystemPrompt(mode: string): string {
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
-  console.log(`[DEBUG v6.0] Received ${req.method} request`);
+  console.log(`[DEBUG v7.0] Received ${req.method} request`);
 
   try {
     const authHeader = req.headers.get('Authorization');
@@ -27,12 +27,7 @@ serve(async (req: Request) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!authHeader || !supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
-      const missing = [];
-      if (!authHeader) missing.push('Authorization');
-      if (!supabaseUrl) missing.push('SUPABASE_URL');
-      if (!supabaseAnonKey) missing.push('SUPABASE_ANON_KEY');
-      if (!supabaseServiceKey) missing.push('SUPABASE_SERVICE_ROLE_KEY');
-      throw new Error(`Missing required configuration: ${missing.join(', ')}`);
+      throw new Error(`Missing required configuration: SECRETS_NOT_LOADED`);
     }
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -51,7 +46,7 @@ serve(async (req: Request) => {
     }
 
     const { action, messages, mode, sessionId, title, cursor, limit = 20 } = body;
-    console.log(`[DEBUG v6.0] Action: ${action || 'default-chat'}`);
+    console.log(`[DEBUG v7.0] Action: ${action || 'default-chat'}`);
 
     // ACTION: PING (With Logic Diagnostic)
     if (action === 'ping') {
@@ -65,7 +60,8 @@ serve(async (req: Request) => {
       return new Response(JSON.stringify({ 
         status: 'ok', 
         user: user.id,
-        version: '6.0',
+        version: '7.0',
+        multimodal: true,
         diagnostics: report 
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -93,35 +89,20 @@ serve(async (req: Request) => {
       });
     }
 
-    // MULTITENANCY PROVISIONING (SILENT)
-    let organizationId = null;
-    try {
-      const { data: membership } = await adminClient.from('organization_members').select('organization_id').eq('user_id', user.id).maybeSingle();
-      if (!membership) {
-        const slug = `org-${user.id.substring(0, 8)}`;
-        const { data: existingOrg } = await adminClient.from('organizations').select('id').eq('slug', slug).maybeSingle();
-        if (existingOrg) {
-          await adminClient.from('organization_members').insert({ organization_id: existingOrg.id, user_id: user.id, role: 'owner' });
-          organizationId = existingOrg.id;
-        } else {
-          const { data: newOrg } = await adminClient.from('organizations').insert({ name: 'Default Space', slug }).select().maybeSingle();
-          if (newOrg) {
-            await adminClient.from('organization_members').insert({ organization_id: newOrg.id, user_id: user.id, role: 'owner' });
-            organizationId = newOrg.id;
-          }
-        }
-      } else {
-        organizationId = membership.organization_id;
-      }
-    } catch (e: any) {
-      console.warn("[WARN] Provisioning bypassed:", e.message);
-    }
-
     // ACTION: CREATE-SESSION
     if (action === 'create-session') {
+       // Multitenancy logic (Simplified)
+      const { data: membership } = await adminClient.from('organization_members').select('organization_id').eq('user_id', user.id).maybeSingle();
+      let orgId = membership?.organization_id;
+      if (!orgId) {
+         const { data: newOrg } = await adminClient.from('organizations').insert({ name: 'Default Space', slug: `org-${user.id.substring(0, 8)}` }).select().maybeSingle();
+         orgId = newOrg?.id;
+         if (orgId) await adminClient.from('organization_members').insert({ organization_id: orgId, user_id: user.id, role: 'owner' });
+      }
+
       const { data, error } = await adminClient.from('chat_sessions').insert({
         user_id: user.id,
-        organization_id: organizationId,
+        organization_id: orgId,
         title: title || 'New Chat',
         mode: mode || 'general'
       }).select().single();
@@ -154,19 +135,18 @@ serve(async (req: Request) => {
     if (lastMsg?.role === 'user') {
       adminClient.from('chat_messages').insert({
         user_id: user.id,
-        organization_id: organizationId,
         session_id: sessionId,
         role: 'user',
         content: lastMsg.text || lastMsg.content,
         metadata: lastMsg.files ? { files: lastMsg.files } : null
-      }).then(({ error }: { error: any }) => error && console.error('[DEBUG] Msg Save Fail:', error.message));
+      }).then(({ error }: { error: any }) => error && console.error('[FAIL] Msg Save:', error.message));
     }
 
     let aiText = '';
     let firstErrorReason = null;
 
-    // Standard Model List with PROVEN stable identifiers
-    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
+    // Stable Model List with Multimodal capability
+    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b', 'gemini-pro'];
     const endpoints = ['v1beta', 'v1']; 
 
     for (const [keyIdx, key] of apiKeys.entries()) {
@@ -175,39 +155,52 @@ serve(async (req: Request) => {
         if (aiText) break;
         for (const model of models) {
           try {
-            // gemini-1.0-pro is flaky on v1 in many regions
-            if (endpoint === 'v1' && model === 'gemini-1.0-pro') continue;
+            // gemini-pro is text-only usually
+            if (model === 'gemini-pro' && lastMsg.files?.length > 0) continue;
 
-            console.log(`[DEBUG v6.0] Deep Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            console.log(`[DEBUG v7.0] Multimodal Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
             
             const systemPrompt = getSystemPrompt(mode || 'general');
             
-            const payload = {
-              contents: messages.map((m: any, i: number) => {
+            const contents = messages.map((m: any, i: number) => {
                 let role = (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user';
+                let parts: any[] = [];
+                
+                // 1. Add Text Part
                 let text = m.text || m.content || m.parts?.[0]?.text || '';
-                
-                // Embedded Instruction format (Most reliable across v1/v1beta)
                 if (i === 0 && role === 'user') {
-                   text = `[SYSTEM-INSTRUCTION: ${systemPrompt}]\n\nUSER PROMPT: ${text}`;
+                   text = `[SYSTEM: ${systemPrompt}]\n\nUSER: ${text}`;
                 }
-                
-                return { role, parts: [{ text }] };
-              })
-            };
+                if (text) parts.push({ text });
+
+                // 2. Add File Parts (FOR USER MESSAGES)
+                if (role === 'user' && m.files?.length > 0) {
+                  m.files.forEach((f: any) => {
+                    if (f.data && f.mimeType) {
+                      parts.push({
+                        inline_data: {
+                          mime_type: f.mimeType,
+                          data: f.data
+                        }
+                      });
+                    }
+                  });
+                }
+
+                return { role, parts };
+            }).filter((c: any) => c.parts.length > 0);
 
             const res = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models/${model}:generateContent?key=${key}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
+              body: JSON.stringify({ contents }),
             });
-
-            if (res.status === 429) break; 
 
             if (!res.ok) {
               const errText = await res.text();
-              console.error(`[FAIL v6.0] ${model}@${endpoint}:`, errText);
+              console.error(`[FAIL v7.0] ${model}@${endpoint}:`, errText);
               if (!firstErrorReason) firstErrorReason = { status: res.status, body: errText, model, endpoint, keyIdx };
+              if (res.status === 429) break; 
               continue;
             }
 
@@ -221,20 +214,11 @@ serve(async (req: Request) => {
       }
     }
 
-    if (!aiText) {
-      throw new Error(`AI Engines exhausted. Primary Diagnosis: ${JSON.stringify(firstErrorReason)}`);
-    }
+    if (!aiText) throw new Error(`AI Engines exhausted. Primary Diagnosis: ${JSON.stringify(firstErrorReason)}`);
 
     if (sessionId) {
-      adminClient.from('chat_messages').insert({
-        user_id: user.id,
-        organization_id: organizationId,
-        session_id: sessionId,
-        role: 'assistant',
-        content: aiText,
-      }).then(({ error }: { error: any }) => {
-        if (!error) adminClient.rpc('decrement_credits', { user_id: user.id });
-      });
+      adminClient.from('chat_messages').insert({ user_id: user.id, session_id: sessionId, role: 'assistant', content: aiText });
+      adminClient.rpc('decrement_credits', { user_id: user.id });
     }
 
     return new Response(JSON.stringify({ text: aiText }), {
@@ -242,18 +226,7 @@ serve(async (req: Request) => {
     });
 
   } catch (err: any) {
-    console.error('[FATAL] Edge Function Error:', err.message);
-    
-    // Attempt to extract granular DB details if available
-    const errorBody = {
-      error: err.message || String(err),
-      details: err.details || null,
-      hint: err.hint || null,
-      code: err.code || null,
-      context: 'Check Supabase Edge Function logs for details'
-    };
-
-    return new Response(JSON.stringify(errorBody), {
+    return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
