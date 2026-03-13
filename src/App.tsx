@@ -10,6 +10,22 @@ import type { Session } from '@supabase/supabase-js';
 import AuthUI from '@/components/Auth';
 import PaymentUI from '@/components/PaymentUI';
 import AdminDashboard from '@/components/AdminDashboard';
+import SolutionSteps from '@/components/SolutionSteps';
+import VoiceRecorder from '@/components/VoiceRecorder';
+
+interface LocalMessagePayload {
+    role: 'user' | 'model';
+    text: string;
+    created_at?: string;
+    files?: { mimeType: string; data: string; preview?: string }[];
+}
+
+interface Attachment {
+    data: string;
+    mimeType: string;
+    preview: string;
+}
+
 
 const MessageActions = ({ text }: { text: string }) => {
     const [copied, setCopied] = useState(false);
@@ -73,13 +89,15 @@ const MessageActions = ({ text }: { text: string }) => {
 };
 
 export default function App() {
-    const [messages, setMessages] = useState<MessagePayload[]>([]);
+    const [messages, setMessages] = useState<LocalMessagePayload[]>([]);
     const [input, setInput] = useState('');
-    const [attachments, setAttachments] = useState<MediaFile[]>([]);
     const [mode, setMode] = useState<AnalysisMode>('general');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [syncRequired, setSyncRequired] = useState(false);
     const [showWelcome, setShowWelcome] = useState(true);
+    const [inputTab, setInputTab] = useState<'screenshot' | 'files' | 'paste'>('screenshot');
+    const [attachments, setAttachments] = useState<Attachment[]>([]);
     const [isOnline, setIsOnline] = useState(true);
     const [session, setSession] = useState<Session | null>(null);
     const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -89,6 +107,14 @@ export default function App() {
     const [view, setView] = useState<'chat' | 'admin'>('chat');
     const [hasMore, setHasMore] = useState(true);
     const [isOldHistoryLoading, setIsOldHistoryLoading] = useState(false);
+    const [isResettingPassword, setIsResettingPassword] = useState(false);
+
+    // Multi-Chat State
+    const [sessions, setSessions] = useState<any[]>([]);
+    const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+    const [currentSolution, setCurrentSolution] = useState<any>(null);
+    const [showVoice, setShowVoice] = useState(false);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const topSentinelRef = useRef<HTMLDivElement>(null);
 
@@ -99,42 +125,135 @@ export default function App() {
             setIsAuthLoading(false);
         });
 
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
             setSession(session);
             setIsAuthLoading(false);
+            
+            if (event === 'PASSWORD_RECOVERY') {
+                setIsResettingPassword(true);
+            }
+            if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+                setIsResettingPassword(false);
+            }
         });
 
         return () => subscription.unsubscribe();
     }, []);
 
-    // Initial Load
+    // Load Sessions & History
     useEffect(() => {
         if (session) {
-            const initialLoad = async () => {
+            console.log("🔍 [DEBUG] PINGing Edge Function 'chat'...");
+            supabase.functions.invoke('chat', { body: { action: 'ping' } })
+                .then(({ data, error }) => {
+                    if (error) console.error("❌ [DEBUG] PING FAILED:", error);
+                    else {
+                        console.log("✅ [DEBUG] PING SUCCESS:", data);
+                        if (data.diagnostics) {
+                            console.table(data.diagnostics);
+                            const missing = Object.entries(data.diagnostics).filter(([_, v]) => !v).map(([k]) => k);
+                            if (missing.length > 0) {
+                                console.warn("⚠️ [DEBUG] MISSING SECRETS:", missing.join(', '));
+                            } else {
+                                console.log("✨ [DEBUG] ALL SECRETS CONFIGURED!");
+                            }
+                        }
+                    }
+                });
+
+            const loadSessions = async () => {
+                try {
+                    const { data, error } = await supabase.functions.invoke('chat', { body: { action: 'get-sessions' } });
+                    if (data?.warning === 'DB_SYNC_REQUIRED' || error) {
+                        console.error('❌ [DEBUG] SESSION LOAD FAILED:', data?.warning || error);
+                        setSyncRequired(true);
+                        return;
+                    }
+                    if (data?.sessions) {
+                        console.log("✅ [DEBUG] SESSIONS LOADED:", data.sessions.length);
+                        setSessions(data.sessions);
+                        setSyncRequired(false);
+                    }
+                } catch (err) {
+                    console.error('❌ [DEBUG] SESSION LOAD CRASH:', err);
+                    setSyncRequired(true);
+                }
+            };
+            const loadProfile = async () => {
+                const { data } = await supabase.from('profiles').select('is_admin, credits').eq('id', session.user.id).maybeSingle();
+                if (data) {
+                    setIsAdmin(!!data.is_admin);
+                    setCredits(data.credits);
+                }
+            };
+            loadSessions();
+            loadProfile();
+        }
+    }, [session]);
+
+    const refreshProfile = async () => {
+        if (!session) return;
+        const { data } = await supabase.from('profiles').select('credits').eq('id', session.user.id).maybeSingle();
+        if (data) setCredits(data.credits);
+    };
+
+    useEffect(() => {
+        if (session && currentSessionId) {
+            const loadHistory = async () => {
                 setIsLoading(true);
                 try {
+                    console.log(`🔍 [DEBUG] Loading History for session: ${currentSessionId}`);
                     const { data, error } = await supabase.functions.invoke('chat', {
-                        body: { action: 'get-history', limit: 20 }
+                        body: { action: 'get-history', sessionId: currentSessionId, limit: 20 }
                     });
                     if (error) throw error;
                     if (data?.messages) {
-                        const formatted = data.messages.map((m: any) => ({
+                        console.log(`✅ [DEBUG] HISTORY LOADED: ${data.messages.length} messages`);
+                        const formatted: LocalMessagePayload[] = data.messages.map((m: any) => ({
                             role: m.role === 'assistant' ? 'model' : 'user',
                             text: m.content,
-                            created_at: m.created_at
+                            created_at: m.created_at,
+                            files: m.metadata?.files
                         }));
                         setMessages(formatted);
                         setHasMore(data.hasMore);
+
+                        // If in Solver mode, try to parse the last assistant message as a solution
+                        if ((mode === 'code' || mode === 'essay') && formatted.length > 0) {
+                            const lastModel = [...formatted].reverse().find(m => m.role === 'model');
+                            if (lastModel) parseAndSetSolution(lastModel.text);
+                        }
                     }
                 } catch (err) {
-                    console.error('Initial load error:', err);
+                    console.error('❌ [DEBUG] HISTORY LOAD FAILED:', err);
                 } finally {
                     setIsLoading(false);
                 }
             };
-            initialLoad();
+            loadHistory();
         }
-    }, [session]);
+    }, [session, currentSessionId]);
+
+    const parseAndSetSolution = (text: string) => {
+        // Basic parser for the structured markdown from our Edge Function
+        try {
+            const codeMatch = text.match(/```(?:\w+)?\n([\s\S]*?)```/);
+            const steps = text.match(/Steps:?\n([\s\S]*?)(?:\n\n|\nHints:|$)/i)?.[1].split('\n').filter(s => s.trim()) || [];
+            const hints = text.match(/Hints:?\n([\s\S]*?)(?:\n\n|$)/i)?.[1].split('\n').filter(s => s.trim()) || [];
+
+            setCurrentSolution({
+                challenge: text.split('\n')[0].substring(0, 200),
+                code: codeMatch ? codeMatch[1] : undefined,
+                language: text.match(/DETECTED: (\w+)/)?.[1] || 'auto',
+                steps: steps.map(s => s.replace(/^\d+\.\s*/, '')),
+                hints: hints.map(h => h.replace(/^-?\s*/, '')),
+                difficulty: text.toLowerCase().includes('hard') ? 'hard' : text.toLowerCase().includes('medium') ? 'medium' : 'easy',
+                textOutput: mode === 'essay' ? text : undefined
+            });
+        } catch (e) {
+            console.warn('Silent solution parse fail:', e);
+        }
+    };
 
     // Infinite Scroll Implementation
     const loadMoreMessages = async () => {
@@ -235,7 +354,18 @@ export default function App() {
         setMode('general');
         setError(null);
         setShowWelcome(true);
-        localStorage.removeItem('chat_history');
+        setCurrentSessionId(null);
+        setCurrentSolution(null);
+    };
+
+    const startNewChat = (targetMode: AnalysisMode = 'general') => {
+        setCurrentSessionId(null);
+        setMessages([]);
+        setCurrentSolution(null);
+        setMode(targetMode);
+        setSidebarOpen(false);
+        setShowWelcome(true);
+        setError(null);
     };
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -253,7 +383,7 @@ export default function App() {
             setError('Maximum 10 files allowed');
             return;
         }
-        setAttachments(prev => [...prev, { data: base64Data, mimeType: 'image/png' }]);
+        setAttachments(prev => [...prev, { data: base64Data, mimeType: 'image/png', preview: data }]); // Added preview
         setError(null);
     };
 
@@ -283,7 +413,7 @@ export default function App() {
                 else if (file.type === 'image/webp') mimeType = 'image/webp';
                 else if (file.type === 'image/gif') mimeType = 'image/gif';
 
-                setAttachments(prev => [...prev, { data: base64Data, mimeType }]);
+                setAttachments(prev => [...prev, { data: base64Data, mimeType, preview: base64String }]); // Added preview
             };
             reader.readAsDataURL(file);
         });
@@ -299,7 +429,25 @@ export default function App() {
     const handleSend = async () => {
         if ((!input.trim() && attachments.length === 0) || isLoading) return;
 
-        const userMessage: MessagePayload = {
+        // Auto-create session if none active
+        let activeSessionId = currentSessionId;
+        if (!activeSessionId) {
+            setIsLoading(true);
+            try {
+                const { data } = await supabase.functions.invoke('chat', {
+                    body: { action: 'create-session', mode, title: input.substring(0, 30) || 'New Chat' }
+                });
+                if (data?.id) {
+                    activeSessionId = data.id;
+                    setCurrentSessionId(data.id);
+                    setSessions(prev => [data, ...prev]);
+                }
+            } catch (e) {
+                console.error('Session auto-create failed:', e);
+            }
+        }
+
+        const userMessage: LocalMessagePayload = {
             role: 'user',
             text: input.trim(),
             files: attachments.length > 0 ? [...attachments] : undefined
@@ -313,17 +461,40 @@ export default function App() {
         setError(null);
 
         try {
-            // No manual insert here - the Edge Function handles it "No Shortcuts" way
             const { data, error: fnError } = await supabase.functions.invoke('chat', {
-                body: { messages: newHistory, mode },
+                body: { messages: newHistory, mode, sessionId: activeSessionId },
             });
 
-            if (fnError) throw fnError;
+            if (fnError) {
+                console.error("❌ [CHAT ERROR] RAW:", fnError);
+                // Attempt to parse JSON error if it's a 500
+                try {
+                   const errBody = await (fnError as any).context?.json();
+                   if (errBody) console.error("❌ [CHAT ERROR] DETAILED:", JSON.stringify(errBody, null, 2));
+                } catch { /* Ignore if not JSON */ }
+                throw fnError;
+            }
             if (!data?.text) throw new Error('No response from AI');
 
             const aiText = data.text;
             setMessages(prev => [...prev, { role: 'model', text: aiText }]);
-            // No manual insert for assistant either
+
+            // Update sidebar (bump to top)
+            setSessions(prev => {
+                const existing = prev.find(s => s.id === activeSessionId);
+                const others = prev.filter(s => s.id !== activeSessionId);
+                if (existing) {
+                    return [{ ...existing, created_at: new Date().toISOString() }, ...others];
+                }
+                return prev;
+            });
+
+            if (mode === 'code' || mode === 'essay') {
+                parseAndSetSolution(aiText);
+            }
+            
+            // Sync credits after usage
+            setTimeout(refreshProfile, 1000);
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Unknown error occurred';
             setError(message);
@@ -338,6 +509,33 @@ export default function App() {
             e.preventDefault();
             handleSend();
         }
+    };
+
+    const handleDeleteSession = async (id: string) => {
+        try {
+            // Optimistic Update
+            setSessions(prev => prev.filter(s => s.id !== id));
+            if (currentSessionId === id) {
+                setCurrentSessionId(null);
+                setMessages([]);
+            }
+            
+            await supabase.functions.invoke('chat', {
+                body: { action: 'delete-session', sessionId: id }
+            });
+        } catch (err) {
+            console.error('Delete failed:', err);
+            // Revert on failure (optional, but professional)
+            const { data } = await supabase.functions.invoke('chat', { body: { action: 'get-sessions' } });
+            if (data?.sessions) setSessions(data.sessions);
+        }
+    };
+
+    const handleNewChat = () => {
+        setCurrentSessionId(null);
+        setMessages([]);
+        setSidebarOpen(false);
+        setError(null);
     };
 
     const handleSignOut = async () => {
@@ -360,325 +558,470 @@ export default function App() {
         );
     }
 
-    if (!session) {
+    if (!session || isResettingPassword) {
         return (
             <div className="min-h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] flex items-center justify-center p-4">
-                <AuthUI />
+                <AuthUI initialView={isResettingPassword ? 'update_password' : 'sign_in'} />
+                {isResettingPassword && (
+                    <button 
+                        onClick={() => setIsResettingPassword(false)}
+                        className="fixed top-4 left-4 text-[#555577] hover:text-white flex items-center gap-2 p-2 bg-[#12121e] rounded-xl border border-[#1e1e35] transition-all"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Back to Login</span>
+                    </button>
+                )}
             </div>
         );
     }
 
     return (
-        <div className="flex flex-col h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] font-sans transition-colors duration-300">
-            <header className="flex-shrink-0 bg-white/90 dark:bg-black/90 backdrop-blur-xl border-b border-gray-200/50 dark:border-white/10 px-3 sm:px-6 md:px-8 py-3 flex items-center justify-between z-30 sticky top-0 shadow-sm">
-                <button
-                    onClick={resetApp}
-                    className="flex items-center gap-2 sm:gap-3 group transition-all active:scale-95 min-w-0"
-                    title="Go to Home"
-                >
-                    <div className="w-8 h-8 sm:w-10 sm:h-10 bg-black rounded-lg sm:rounded-xl flex items-center justify-center shadow-lg group-hover:shadow-black/20 transition-all overflow-hidden border border-white/10 flex-shrink-0">
-                        <img src="/logo.svg" alt="Sam Software Logo" className="w-6 h-6 sm:w-8 sm:h-8" />
-                    </div>
-                    <div className="text-left truncate">
-                        <h1 className="text-sm sm:text-lg font-bold text-black dark:text-white tracking-tight leading-none group-hover:text-gray-600 transition-colors truncate">Software Challenge Solver</h1>
-                        <p className="hidden sm:block text-[10px] font-bold text-gray-400 tracking-[0.15em] uppercase mt-0.5">International</p>
-                    </div>
-                </button>
+        <div className="flex h-screen bg-[#08080f] text-[#e8e8f8] font-sans selection:bg-[#4f8ef7]/30 selection:text-white overflow-hidden relative">
+            {/* Drawer Backdrop Overlay */}
+            <div
+                className={`fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                onClick={() => setSidebarOpen(false)}
+            />
 
-                <div className="hidden lg:flex bg-gray-200/50 dark:bg-white/5 p-1 rounded-xl border border-black/5 dark:border-white/5 gap-1">
-                    {(['general', 'code', 'essay', 'handwriting'] as const).map(m => (
-                        <button
-                            key={m}
-                            onClick={() => setMode(m)}
-                            className={`px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all duration-200 ${mode === m
-                                ? 'bg-[#141413] text-white shadow-xl scale-105'
-                                : 'text-gray-500 hover:text-[#141413] dark:hover:text-white hover:bg-white/50 dark:hover:bg-white/10'
-                                }`}
-                        >
-                            {m}
-                        </button>
-                    ))}
-                </div>
-
-                <div className="flex items-center gap-2 sm:gap-3">
-                    {credits !== null && (
-                        <div className="hidden xs:flex items-center gap-1.5 px-3 py-1.5 bg-black/5 dark:bg-white/5 rounded-lg border border-black/5 dark:border-white/10">
-                            <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest leading-none">Credits</span>
-                            <span className="text-xs font-black text-black dark:text-white leading-none">{credits}</span>
-                        </div>
-                    )}
-                    <div className="hidden md:flex flex-col items-end mr-1 sm:mr-2">
-                        <span className="text-[9px] font-black text-black dark:text-gray-400 uppercase tracking-widest">{session.user.email?.split('@')[0]}</span>
-                        <button
-                            onClick={handleSignOut}
-                            className="text-[10px] font-bold text-red-500 hover:text-red-600 transition-colors uppercase tracking-tight"
-                        >
-                            Sign Out
-                        </button>
-                    </div>
-                    <div className="w-7 h-7 sm:w-10 sm:h-10 rounded-full bg-black flex items-center justify-center border border-white/10 flex-shrink-0 shadow-lg">
-                        <span className="text-white text-xs font-black uppercase">
-                            {session.user.email?.[0] || 'U'}
-                        </span>
-                    </div>
-                    <button
-                        onClick={() => setShowPayment(true)}
-                        className="px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-[0_0_15px_rgba(234,179,8,0.3)] transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
-                    >
-                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
-                        UPGRADE
-                    </button>
-
-                    {isAdmin && (
-                        <button
-                            onClick={() => setView(view === 'chat' ? 'admin' : 'chat')}
-                            className="px-4 py-2 bg-black dark:bg-white text-white dark:text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-xl transition-all hover:scale-105 active:scale-95 flex items-center gap-2 border border-white/10"
-                        >
-                            {view === 'chat' ? 'Admin' : 'Chat'}
-                        </button>
-                    )}
-                </div>
-            </header >
-
-            {showPayment && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
-                    <div className="relative w-full max-w-md animate-in zoom-in-95 duration-300">
-                        <button
-                            onClick={() => setShowPayment(false)}
-                            className="absolute -top-12 right-0 p-2 text-white hover:text-gray-300 transition-colors"
-                        >
-                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
-                        <PaymentUI session={session} />
-                    </div>
-                </div>
-            )}
-
-            {view === 'admin' ? (
-                <main className="flex-1 overflow-y-auto">
-                    <div className="max-w-6xl mx-auto">
-                        <AdminDashboard />
-                    </div>
-                </main>
-            ) : (
-                <main className="flex-1 overflow-y-auto px-4 md:px-0 py-8 space-y-8 scroll-smooth" ref={scrollContainerRef}>
-                    <div className="max-w-4xl mx-auto space-y-8">
-                        <div ref={topSentinelRef} className="h-4 w-full flex justify-center items-center">
-                            {isOldHistoryLoading && (
-                                <div className="flex gap-1 py-4">
-                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                                    <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
-                                </div>
-                            )}
-                        </div>
-                        {mode === 'handwriting' && messages.length === 0 && (
-                            <div className="text-center py-12 px-6 bg-white/20 dark:bg-white/5 rounded-3xl border border-black/5 dark:border-white/5 backdrop-blur-sm shadow-sm">
-                                <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
-                                    <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                                </div>
-                                <h2 className="text-2xl font-bold text-black dark:text-white mb-2 leading-tight">Handwriting to Text OCR</h2>
-                                <p className="text-gray-500 dark:text-gray-400 max-w-sm mx-auto font-medium">Upload up to 10 photos and I will transcribe them with high precision.</p>
-                            </div>
-                        )}
-
-                        {messages.length === 0 && mode !== 'handwriting' && (
-                            <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4">
-                                <div className="w-16 h-16 sm:w-20 sm:h-20 bg-black rounded-full flex items-center justify-center shadow-xl mb-6 sm:mb-8 overflow-hidden">
-                                    <img src="/logo.svg" alt="Sam Software Logo" className="w-10 h-10 sm:w-12 sm:h-12" />
-                                </div>
-                                <h2 className="text-[28px] xs:text-3xl sm:text-4xl font-extrabold text-black dark:text-white tracking-tighter mb-4 text-center leading-tight">Software Challenge Solver.</h2>
-                                <p className="text-base sm:text-lg text-gray-500 dark:text-gray-400 font-medium text-center max-w-md px-2">Military-grade AI partner for code, essays, and handwriting.</p>
-
-                                <div className="grid grid-cols-2 gap-2 sm:gap-4 mt-8 sm:mt-12 w-full max-w-lg px-2 sm:px-4 lg:hidden">
-                                    {(['general', 'code', 'essay', 'handwriting'] as const).map(m => (
-                                        <button
-                                            key={m}
-                                            onClick={() => setMode(m)}
-                                            className={`py-3 sm:py-4 rounded-xl sm:rounded-2xl font-bold uppercase tracking-tighter transition-all flex items-center justify-center gap-2 border-2 ${mode === m
-                                                ? 'bg-black text-white border-black shadow-lg scale-105'
-                                                : 'bg-white dark:bg-white/5 text-gray-400 border-gray-100 dark:border-white/10 hover:border-gray-200'
-                                                }`}
-                                        >
-                                            <span className="text-[9px] sm:text-[10px]">{m}</span>
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        {messages.map((msg, idx) => (
-                            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                                <div className={`max-w-[92%] md:max-w-[85%] rounded-[2rem] p-5 md:p-8 shadow-md transition-all ${msg.role === 'user'
-                                    ? 'bg-[#141413] text-white rounded-br-md border border-white/5'
-                                    : 'bg-white dark:bg-[#1A1A1A] text-black dark:text-white border border-black/5 dark:border-white/10 rounded-bl-md'
-                                    }`}>
-
-                                    {msg.role === 'model' && (
-                                        <div className="flex items-center gap-2 mb-4 opacity-50">
-                                            <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                                            <span className="text-[9px] font-black uppercase tracking-[0.2em]">Military Grade Output</span>
-                                        </div>
-                                    )}
-
-                                    {msg.files && msg.files.length > 0 && (
-                                        <div className="flex flex-wrap gap-2 mb-4">
-                                            {msg.files.map((file, fIdx) => (
-                                                <div key={fIdx} className="w-20 h-20 rounded-xl overflow-hidden shadow-md border-2 border-white/20 dark:border-white/10 bg-black/5 relative group transition-transform hover:scale-105 cursor-pointer">
-                                                    {file.mimeType === 'application/pdf' ? (
-                                                        <div className="w-full h-full flex flex-col items-center justify-center bg-white text-red-600">
-                                                            <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
-                                                            <span className="text-[10px] font-black mt-1 uppercase tracking-widest">PDF</span>
-                                                        </div>
-                                                    ) : (
-                                                        <img src={`data:${file.mimeType};base64,${file.data}`} alt="attachment" className="w-full h-full object-cover" />
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-
-                                    {msg.role === 'model' ? (
-                                        <>
-                                            <div className="prose prose-neutral dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/90 prose-pre:border prose-pre:border-white/10 prose-code:text-blue-500 dark:prose-code:text-blue-400 text-black dark:text-white">
-                                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-                                            </div>
-                                            <MessageActions text={msg.text} />
-                                        </>
-                                    ) : (
-                                        <p className="whitespace-pre-wrap text-sm md:text-base font-medium leading-relaxed tracking-tight text-white">{msg.text}</p>
-                                    )}
-                                </div>
-                            </div>
-                        ))}
-
-                        {isLoading && (
-                            <div className="flex justify-start animate-in fade-in slide-in-from-bottom-1 duration-500">
-                                <div className="bg-white/50 dark:bg-white/5 border border-black/5 dark:border-white/5 rounded-3xl px-6 py-4 shadow-sm flex items-center gap-4 text-[#141413] dark:text-gray-400">
-                                    <div className="flex gap-1">
-                                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                                        <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></div>
-                                    </div>
-                                    <span className="text-xs font-bold uppercase tracking-widest ">Thinking</span>
-                                </div>
-                            </div>
-                        )}
-                        <div ref={messagesEndRef} />
-                    </div>
-                </main>
-            )}
-
-            <footer className="bg-white/80 dark:bg-black/50 backdrop-blur-xl border-t border-gray-200/50 dark:border-white/10 p-4 md:p-6 shrink-0 transition-all">
-                <div className="max-w-4xl mx-auto">
-                    {error && <div className="text-red-500 text-xs font-bold bg-red-50 dark:bg-red-950/20 px-4 py-3 rounded-2xl border border-red-100 dark:border-red-900/30 mb-4 animate-in slide-in-from-top-2">{error}</div>}
-
-                    {attachments.length > 0 && (
-                        <div className="flex flex-wrap gap-3 mb-4 px-2">
-                            {attachments.map((file, idx) => (
-                                <div key={idx} className="relative group w-16 h-16 rounded-2xl overflow-hidden border-2 border-white dark:border-white/10 shadow-xl bg-gray-100 flex items-center justify-center transition-transform hover:scale-105">
-                                    {file.mimeType === 'application/pdf' ? (
-                                        <span className="text-xs font-black text-red-600">PDF</span>
-                                    ) : (
-                                        <img src={`data:${file.mimeType};base64,${file.data}`} alt="preview" className="w-full h-full object-cover" />
-                                    )}
-                                    <button onClick={() => removeAttachment(idx)} className="absolute top-1 right-1 bg-black text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-all shadow-lg hover:bg-red-500">
-                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M6 18L18 6M6 6l12 12" /></svg>
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-
-                    <div className="relative group transition-all">
-                        <div className="absolute inset-0 bg-[#141413]/5 dark:bg-white/5 rounded-[2rem] blur-xl opacity-0 group-focus-within:opacity-100 transition-opacity"></div>
-                        <div className="relative flex items-end gap-1 sm:gap-2 bg-white dark:bg-black/40 p-1 sm:p-2 rounded-[1.25rem] sm:rounded-[1.5rem] border border-black/10 dark:border-white/10 shadow-2xl transition-all focus-within:border-black dark:focus-within:border-white/40 ring-0 min-w-0">
-                            <div className="flex items-center gap-0 sm:gap-0.5 shrink-0 px-0.5 sm:px-1">
-                                <div className="relative">
-                                    <input
-                                        type="file"
-                                        accept="image/*,application/pdf"
-                                        multiple
-                                        onChange={handleFileUpload}
-                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                        title="Upload Files"
-                                        disabled={isLoading || attachments.length >= 10}
-                                    />
-                                    <button type="button" className="p-2 sm:p-3 text-gray-400 hover:text-black dark:hover:text-white transition-colors">
-                                        <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
-                                    </button>
-                                </div>
-
-                                <div className="relative">
-                                    <input
-                                        type="file"
-                                        accept="image/*"
-                                        capture="environment"
-                                        onChange={handleFileUpload}
-                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                        title="Take Photo"
-                                        disabled={isLoading || attachments.length >= 10}
-                                    />
-                                    <button type="button" className="p-2 sm:p-3 text-gray-400 hover:text-green-600 transition-colors">
-                                        <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                                    </button>
-                                </div>
-
-                                <div className="hidden xs:block">
-                                    <ScreenshotCapture onCapture={handleCapture} onError={setError} />
-                                </div>
-                                <div className="hidden md:block">
-                                    <WebcamCapture onCapture={handleCapture} onError={setError} />
-                                </div>
-                            </div>
-
-                            <textarea
-                                className="flex-1 max-h-48 min-h-[48px] sm:min-h-[56px] w-full resize-none bg-transparent py-3 sm:py-4 px-1 sm:px-2 text-black dark:text-white placeholder-gray-400 focus:outline-none text-[15px] sm:text-[16px] leading-relaxed font-medium min-w-0"
-                                placeholder={`Ask ${mode}...`}
-                                value={input}
-                                onChange={(e) => setInput(e.target.value)}
-                                onKeyDown={handleKeyDown}
-                                disabled={isLoading}
-                                rows={1}
-                            />
-
-                            <button
-                                onClick={handleSend}
-                                disabled={isLoading || (!input.trim() && attachments.length === 0)}
-                                className="mb-1 mr-1 p-4 bg-[#141413] dark:bg-white text-white dark:text-black rounded-2xl shadow-xl hover:scale-105 active:scale-95 transition-all disabled:opacity-20 disabled:hover:scale-100 disabled:cursor-not-allowed shrink-0"
-                            >
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 12h14M12 5l7 7-7 7" />
-                                </svg>
+            {/* History Sidebar */}
+            <aside className={`fixed inset-y-0 left-0 bg-[#0c0c18] w-72 border-r border-[#1e1e35] shadow-2xl z-50 transform transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                <div className="p-4 flex flex-col h-full">
+                    <div className="flex items-center justify-between mb-6 px-2">
+                        <span className="text-[11px] font-black text-[#555577] uppercase tracking-[0.2em]">Sessions</span>
+                        <div className="flex gap-1">
+                            <button onClick={handleNewChat} className="p-2 text-[#4f8ef7] hover:bg-[#4f8ef7]/10 rounded-lg transition-all" title="New Chat">
+                                <svg width={18} height={18} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>
+                            </button>
+                            <button onClick={() => setSidebarOpen(false)} className="lg:hidden p-2 text-[#555577] hover:text-[#aaa] transition-colors">
+                                <svg width={18} height={18} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                         </div>
                     </div>
 
-                    <div className="flex flex-col md:flex-row items-center justify-between mt-8 md:mt-10 px-4 gap-6">
-                        <div className="hidden md:flex items-center gap-6">
-                            <div className={`w-2 h-2 ${isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]'} rounded-full animate-pulse transition-all`}></div>
-                            <span className={`text-[10px] font-bold ${isOnline ? 'text-gray-400' : 'text-red-400'} tracking-widest uppercase`}>
-                                {isOnline ? 'Online' : 'Offline'}
-                            </span>
+                    <div className="flex-1 overflow-y-auto space-y-1 custom-scrollbar">
+                        {syncRequired ? (
+                            <div className="flex flex-col items-center justify-center py-10 text-center px-4 bg-amber-500/5 rounded-2xl border border-amber-500/20 m-2">
+                                <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center mb-3">
+                                    <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                                </div>
+                                <p className="text-[10px] font-black uppercase tracking-widest text-amber-500/80 mb-1">Database Sync Required</p>
+                                <p className="text-[9px] text-[#555577]">Please run the setup script in your Supabase SQL Editor.</p>
+                            </div>
+                        ) : sessions.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-10 text-center px-4">
+                                <div className="w-12 h-12 rounded-2xl bg-[#12121e] border border-[#1e1e35] flex items-center justify-center mb-4">
+                                    <svg className="w-6 h-6 text-[#444466]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                                </div>
+                                <p className="text-[10px] font-black uppercase tracking-widest text-[#555577] mb-1">No Recent Chats</p>
+                                <p className="text-[9px] text-[#444466]">Your session history will appear here.</p>
+                            </div>
+                        ) : (
+                            sessions.map(s => (
+                                <button
+                                    key={s.id}
+                                    onClick={() => {
+                                        setCurrentSessionId(s.id);
+                                        setMode(s.mode || 'general');
+                                        setSidebarOpen(false);
+                                    }}
+                                    className={`w-full p-3 rounded-xl text-left transition-all flex items-center gap-3 group ${currentSessionId === s.id
+                                        ? 'bg-[#1a1a30] border border-[#2a2a45] text-[#c0c0f0]'
+                                        : 'border border-transparent hover:bg-[#141426] text-[#888] hover:text-[#c0c0f0]'
+                                        }`}
+                                >
+                                    <span className="text-base shrink-0">
+                                        {s.mode === 'code' ? '💻' : s.mode === 'essay' ? '📝' : s.mode === 'handwriting' ? '✍️' : '💬'}
+                                    </span>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-semibold truncate">{s.title || 'Untitled Solve'}</div>
+                                        <div className="text-[10px] opacity-40 uppercase tracking-tighter mt-0.5">{new Date(s.created_at).toLocaleDateString()}</div>
+                                    </div>
+                                    <button 
+                                        onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                                        className="p-2 text-[#444466] hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all pointer-events-auto"
+                                        title="Delete Session"
+                                    >
+                                        <svg width={14} height={14} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                    </button>
+                                </button>
+                            ))
+                        )}
+                    </div>
+
+                    <div className="pt-4 border-t border-[#1e1e35] mt-auto space-y-3">
+                        {/* Credits Display */}
+                        <div className="bg-[#12121e] border border-[#1e1e35] rounded-2xl p-4 shadow-xl">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-[10px] font-black text-[#555577] uppercase tracking-widest">Available Credits</span>
+                                <span className="text-xs font-black text-[#4f8ef7]">{(credits || 0).toLocaleString()}</span>
+                            </div>
+                            <div className="w-full h-1 bg-[#1e1e35] rounded-full overflow-hidden">
+                                <div 
+                                    className="h-full bg-gradient-to-r from-[#4f8ef7] to-[#9f6ef5] transition-all duration-1000"
+                                    style={{ width: `${Math.min(100, ((credits || 0) / 1000) * 100)}%` }}
+                                />
+                            </div>
+                            <button 
+                                onClick={() => setShowPayment(true)}
+                                className="w-full mt-3 py-2 px-4 rounded-xl bg-[#4f8ef7]/10 hover:bg-[#4f8ef7] text-[#4f8ef7] hover:text-white text-[10px] font-black uppercase tracking-widest transition-all border border-[#4f8ef7]/20 hover:border-transparent flex items-center justify-center gap-2"
+                            >
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                                Top Up Now
+                            </button>
                         </div>
 
-                        <div className="flex flex-col items-center md:items-end gap-2 text-center md:text-right">
-                            <p className="text-[11px] font-bold text-black dark:text-white tracking-tight opacity-80 uppercase">Sam Software LLC International</p>
-                            <div className="flex flex-wrap justify-center md:justify-end gap-5 text-[11px] font-medium text-gray-500 lowercase transition-all" style={{ fontVariant: 'small-caps' }}>
-                                <a href="https://wa.me/256783647260" target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:text-black dark:hover:text-white transition-colors group">
-                                    <svg className="w-3.5 h-3.5 fill-current text-green-600 group-hover:text-green-500 transition-colors" viewBox="0 0 24 24">
-                                        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.72.937 3.659 1.432 5.631 1.433h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-                                    </svg>
-                                    +256 783 647260 WhatsApp
-                                </a>
-                                <a href="mailto:samsoftware75@gmail.com" className="hover:text-black dark:hover:text-white transition-colors">
-                                    samsoftware75@gmail.com
-                                </a>
+                        <button onClick={handleSignOut} className="w-full p-3 rounded-xl text-left text-red-500/80 hover:bg-red-500/10 hover:text-red-500 transition-all flex items-center gap-3 group">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                            <span className="text-[10px] font-black uppercase tracking-widest">Sign Out</span>
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            <div className="flex flex-col flex-1 min-w-0 h-full">
+                {/* Header */}
+                <header className="flex-shrink-0 h-14 border-b border-[#1e1e35] bg-[#0e0e1c] flex items-center justify-between px-4 z-30">
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={() => setSidebarOpen(true)}
+                            className={`p-2 rounded-lg transition-colors ${sidebarOpen ? 'bg-[#1e1e35] text-white' : 'text-[#888] hover:bg-[#1a1a2e]'}`}
+                        >
+                            <svg width={20} height={20} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+                        </button>
+                            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#4f8ef7] to-[#9f6ef5] flex items-center justify-center shadow-[0_0_20px_rgba(79,142,247,0.3)]">
+                                <img src="/logo.svg" alt="Connie" className="w-6 h-6 invert" />
+                            </div>
+                            <div className="flex items-center text-sm font-black tracking-tight">
+                                <span className="bg-gradient-to-r from-[#4f8ef7] to-[#9f6ef5] bg-clip-text text-transparent">Ask Connie</span>
+                                <span className="text-[#e8e8f8] ml-1">Ai</span>
+                            </div>
+                    </div>
+
+                    <div className="flex items-center text-sm font-black tracking-tight">
+                        <span className="bg-gradient-to-r from-[#4f8ef7] to-[#9f6ef5] bg-clip-text text-transparent">Ask Connie</span>
+                        <span className="text-[#e8e8f8] ml-1">Ai</span>
+                    </div>
+                    {/* Desktop Mode Toggle */}
+                    <div className="hidden lg:flex items-center bg-[#13131f] rounded-xl p-0.5 border border-[#1e1e35] gap-0.5">
+                        {(['general', 'code', 'essay', 'handwriting'] as const).map(m => (
+                            <button
+                                key={m}
+                                onClick={() => setMode(m)}
+                                className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === m
+                                    ? 'bg-[#4f8ef7] text-white shadow-lg'
+                                    : 'text-[#666] hover:text-[#aaa]'
+                                    }`}
+                            >
+                                {m}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => startNewChat(mode)} className="hidden sm:flex items-center gap-2 px-4 py-2 bg-[#4f8ef7] hover:bg-[#3a7de6] text-white text-[10px] font-black uppercase tracking-widest rounded-lg transition-all shadow-lg active:scale-95">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4" /></svg>
+                            New Chat
+                        </button>
+                        
+                        <div className="h-6 w-px bg-[#1e1e35] mx-1"></div>
+
+                        <div className="flex items-center gap-2 group cursor-pointer" onClick={() => isAdmin && setView(view === 'chat' ? 'admin' : 'chat')}>
+                             <div className="flex flex-col items-end leading-none">
+                                <span className="text-[9px] font-black text-white/40 uppercase tracking-widest group-hover:text-white transition-colors">{session.user.email?.split('@')[0]}</span>
+                                {credits !== null && <span className="text-[10px] font-black text-[#4f8ef7] mt-0.5">{credits} Credits</span>}
+                             </div>
+                             <div className="w-8 h-8 rounded-lg bg-[#1a1a2e] border border-[#2a2a45] flex items-center justify-center group-hover:border-[#4f8ef7] transition-all">
+                                <span className="text-[#e8e8f8] text-[10px] font-black uppercase">{session.user.email?.[0] || 'U'}</span>
+                             </div>
+                        </div>
+
+                        {isAdmin && (
+                            <button onClick={() => setView(view === 'chat' ? 'admin' : 'chat')} className="p-2 text-[#888] hover:text-white transition-colors">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                            </button>
+                        )}
+
+                        <button onClick={() => setShowPayment(true)} className="p-2 text-yellow-500 hover:text-yellow-400 transition-colors">
+                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+                        </button>
+                    </div>
+                </header>
+
+                {showPayment && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+                        <div className="relative w-full max-w-md animate-in zoom-in-95 duration-300">
+                            <button
+                                onClick={() => setShowPayment(false)}
+                                className="absolute -top-12 right-0 p-2 text-white hover:text-gray-300 transition-colors"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                            <PaymentUI session={session} />
+                        </div>
+                    </div>
+                )}
+
+                <main className="flex-1 overflow-y-auto px-4 py-8 space-y-8 scroll-smooth custom-scrollbar" ref={scrollContainerRef}>
+                    {view === 'admin' ? (
+                        <AdminDashboard />
+                    ) : currentSolution && (mode === 'code' || mode === 'essay') ? (
+                        <div className="max-w-6xl mx-auto h-full flex flex-col gap-6 animate-in slide-in-from-right-4 duration-500">
+                             <div className="flex items-center justify-between mb-4">
+                                <button
+                                    onClick={() => setCurrentSolution(null)}
+                                    className="px-4 py-2 bg-[#1a1a2e] border border-[#2a2a45] rounded-xl text-[10px] font-black uppercase tracking-widest text-[#888] hover:text-white transition-all flex items-center gap-2"
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                                    Back to Chat
+                                </button>
+                                <div className="text-[10px] font-black uppercase tracking-widest text-[#4f8ef7]">Solution Analysis Active</div>
+                            </div>
+                            <div className="flex-1 bg-[#12121e] border border-[#1e1e35] rounded-[2.5rem] overflow-hidden shadow-2xl">
+                                <SolutionSteps {...currentSolution} />
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="max-w-4xl mx-auto space-y-8">
+                            <div ref={topSentinelRef} className="h-4 w-full flex justify-center items-center">
+                                {isOldHistoryLoading && (
+                                    <div className="flex gap-1 py-4">
+                                        <div className="thinking-dot" style={{ animationDelay: '0ms' }} />
+                                        <div className="thinking-dot" style={{ animationDelay: '150ms' }} />
+                                        <div className="thinking-dot" style={{ animationDelay: '300ms' }} />
+                                    </div>
+                                )}
+                            </div>
+
+                            {messages.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center py-12 text-center gap-6 animate-in fade-in duration-700">
+                                    <div className="w-20 h-20 rounded-[2rem] bg-gradient-to-br from-[#4f8ef71a] to-[#9f6ef51a] border border-[#2e2e50] flex items-center justify-center">
+                                        <svg width={40} height={40} fill="none" stroke="currentColor" viewBox="0 0 24 24" className="text-[#4f8ef7]">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h2 className="text-xl font-bold text-[#e0e0f8] mb-2 tracking-tight">Ask Connie Ai Intelligence 🔑</h2>
+                                        <p className="text-sm text-[#555577] max-w-sm mx-auto leading-relaxed">
+                                            Multi-shot capture, handwriting OCR, and AI modeling combined into one complete intelligence engine.
+                                        </p>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-3 w-full max-w-lg mt-4">
+                                        {[
+                                            ['📸', 'Multi-shot', 'Capture parts 1, 2, 3'],
+                                            ['✍️', 'OCR Mode', 'Handwriting to text'],
+                                            ['💻', 'Code Solve', 'Step-by-step logic'],
+                                            ['📝', 'Essay Auth', 'Humanized assignments'],
+                                        ].map(([icon, title, subtitle]) => (
+                                            <div key={title} className="bg-[#10101c] border border-[#1e1e30] rounded-2xl p-4 text-left hover:border-[#4f8ef7]/40 transition-colors cursor-pointer" onClick={() => setMode(title.split(' ')[0].toLowerCase() as any)}>
+                                                <div className="text-xl mb-1">{icon}</div>
+                                                <div className="text-xs font-bold text-[#c0c0e0]">{title}</div>
+                                                <div className="text-[10px] text-[#444466] mt-1">{subtitle}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="space-y-6">
+                                    {messages.map((msg, idx) => (
+                                        <div key={idx} className={`flex gap-3 mb-8 items-start ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                            <div className="flex flex-col gap-1 min-w-0 max-w-[85%]">
+                                                <div className={`flex items-center gap-2 mb-1 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                                    <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-[8px] font-black shadow-sm ${msg.role === 'user' ? 'bg-[#4f8ef7] text-white' : 'bg-gradient-to-br from-[#4f8ef7] to-[#9f6ef5] text-white'}`}>
+                                                        {msg.role === 'user' ? 'U' : 'C'}
+                                                    </div>
+                                                    <span className="text-[9px] font-bold text-[#555577] uppercase tracking-widest">{msg.role === 'user' ? 'You' : 'Ask Connie Ai'}</span>
+                                                </div>
+                                                <div className={`p-4 rounded-[1.5rem] shadow-sm transition-all duration-300 ${
+                                                    msg.role === 'user'
+                                                        ? 'bg-[#1a1a2e] border border-[#2a2a45] text-white rounded-tr-none'
+                                                        : 'bg-[#12121e] border border-[#1e1e35] text-[#e8e8f8] rounded-tl-none'
+                                                }`}>
+                                                    {msg.files && msg.files.length > 0 && (
+                                                        <div className="flex flex-wrap gap-2 mb-3">
+                                                            {msg.files.map((file: any, fIdx: number) => (
+                                                                <div key={fIdx} className="w-20 h-20 rounded-xl overflow-hidden shadow-md border border-white/10 bg-black/20 group relative">
+                                                                    {file.mimeType === 'application/pdf' ? (
+                                                                        <div className="w-full h-full flex flex-col items-center justify-center bg-white/5">
+                                                                            <svg className="w-8 h-8 text-red-500" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
+                                                                            <span className="text-[8px] font-black mt-1 uppercase text-[#888]">PDF</span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <img src={file.preview} alt="attachment" className="w-full h-full object-cover" />
+                                                                    )}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+
+                                                    <div className={`prose prose-sm prose-invert max-w-none text-sm leading-relaxed ${msg.role === 'user' ? 'text-white' : 'text-[#d8d8f0]'}`}>
+                                                        {msg.role === 'model' ? (
+                                                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+                                                        ) : (
+                                                            <p className="whitespace-pre-wrap">{msg.text}</p>
+                                                        )}
+                                                    </div>
+
+                                                    {msg.role === 'model' && <MessageActions text={msg.text} />}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+
+                                    {isLoading && (
+                                        <div className="flex gap-3 items-start msg-enter">
+                                            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#4f8ef7] to-[#9f6ef5] flex items-center justify-center text-[10px] font-black shadow-lg">C</div>
+                                            <div className="bg-[#12121e] border border-[#1e1e35] rounded-2xl rounded-tl-sm px-5 py-4 flex items-center gap-3 shadow-xl">
+                                                <div className="flex gap-1.5">
+                                                    <div className="thinking-dot" style={{ animationDelay: '0ms' }} />
+                                                    <div className="thinking-dot" style={{ animationDelay: '150ms' }} />
+                                                    <div className="thinking-dot" style={{ animationDelay: '300ms' }} />
+                                                </div>
+                                                <span className="text-xs font-semibold text-[#555577]">Connie is thinking...</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+                    )}
+                </main>
+
+                <footer className="p-4 bg-transparent relative z-20">
+                    <div className="max-w-4xl mx-auto">
+                        {/* Tab Switcher */}
+                        <div className="flex bg-[#12121e]/80 backdrop-blur-md border border-[#1e1e35] rounded-2xl p-1 mb-3 w-fit mx-auto shadow-xl">
+                            {[
+                                { id: 'screenshot', icon: '📸', label: 'Screenshot' },
+                                { id: 'files', icon: '📁', label: 'Files' },
+                                { id: 'paste', icon: '📝', label: 'Paste' }
+                            ].map(tab => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setInputTab(tab.id as any)}
+                                    className={`flex items-center gap-2 px-4 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                                        inputTab === tab.id 
+                                        ? 'bg-[#4f8ef7] text-white shadow-lg' 
+                                        : 'text-[#555577] hover:text-[#c0c0e0]'
+                                    }`}
+                                >
+                                    <span>{tab.icon}</span>
+                                    {tab.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="bg-[#12121e]/90 backdrop-blur-xl border border-[#1e1e35] rounded-[2rem] p-2 shadow-2xl relative group focus-within:border-[#4f8ef7]/50 transition-all duration-300">
+                            {attachments.length > 0 && (
+                                <div className="flex gap-2 p-3 overflow-x-auto custom-scrollbar border-b border-[#1e1e35] mb-2">
+                                    {attachments.map((file, idx) => (
+                                        <div key={idx} className="relative group/thumb shrink-0">
+                                            <div className="w-14 h-14 rounded-xl overflow-hidden border border-white/10 bg-black/40 shadow-lg">
+                                                {file.mimeType === 'application/pdf' ? (
+                                                    <div className="w-full h-full flex flex-col items-center justify-center">
+                                                        <svg className="w-6 h-6 text-red-500" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" /></svg>
+                                                        <span className="text-[6px] font-black uppercase text-gray-500">PDF</span>
+                                                    </div>
+                                                ) : (
+                                                    <img src={file.preview} alt="Attachment" className="w-full h-full object-cover" />
+                                                )}
+                                            </div>
+                                            <button 
+                                                onClick={() => removeAttachment(idx)}
+                                                className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity shadow-lg"
+                                            >
+                                                <svg width={10} height={10} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            <div className="flex items-end gap-2 pr-2">
+                                <div className="flex-1 relative">
+                                    {inputTab === 'screenshot' && (
+                                        <div className="flex gap-2 pl-2 pb-2">
+                                            <ScreenshotCapture onCapture={handleCapture} onError={setError} />
+                                            <WebcamCapture onCapture={handleCapture} onError={setError} />
+                                        </div>
+                                    )}
+                                    {inputTab === 'files' && (
+                                        <div className="px-3 pb-2 text-[10px] text-[#555577] font-bold uppercase tracking-widest flex items-center gap-2">
+                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                            Click plus to add files
+                                        </div>
+                                    )}
+                                    <textarea
+                                        rows={Math.min(5, input.split('\n').length)}
+                                        value={input}
+                                        onChange={(e) => setInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && !e.shiftKey) {
+                                                e.preventDefault();
+                                                handleSend();
+                                            }
+                                        }}
+                                        placeholder={
+                                            inputTab === 'screenshot' ? "Describe what to solve in the photo..." :
+                                            inputTab === 'files' ? "Describe what to analyze in these files..." :
+                                            "Paste text or type your challenge here..."
+                                        }
+                                        className="w-full bg-transparent border-none focus:ring-0 text-[#d8d8f0] text-sm resize-none py-3 px-4 placeholder-[#444466] leading-relaxed custom-scrollbar"
+                                    />
+                                </div>
+                                
+                                <div className="flex items-center gap-1.5 pb-2">
+                                    <input
+                                        type="file"
+                                        id="file-upload"
+                                        multiple
+                                        className="hidden"
+                                        onChange={handleFileUpload}
+                                    />
+                                    <label htmlFor="file-upload" className="w-10 h-10 rounded-2xl flex items-center justify-center text-[#555577] hover:text-[#4f8ef7] hover:bg-[#4f8ef7]/10 transition-all cursor-pointer">
+                                        <svg width={20} height={20} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                    </label>
+                                    <VoiceRecorder 
+                                        onTranscription={(text: string) => setInput(prev => prev ? `${prev} ${text}` : text)}
+                                        onError={(err: string) => setError(err)}
+                                    />
+                                    <button
+                                        onClick={handleSend}
+                                        disabled={isLoading || (!input.trim() && attachments.length === 0)}
+                                        className="w-10 h-10 bg-[#4f8ef7] hover:bg-[#3d7ed9] disabled:opacity-30 disabled:hover:bg-[#4f8ef7] text-white rounded-2xl flex items-center justify-center transition-all shadow-lg active:scale-95 group/btn"
+                                    >
+                                        {isLoading ? (
+                                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                        ) : (
+                                            <svg width={18} height={18} fill="none" stroke="currentColor" viewBox="0 0 24 24" className="rotate-90 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9-7-9-7V19z" /></svg>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Status Bar */}
+                        <div className="mt-3 flex items-center justify-between px-4">
+                            <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-[#444466]">
+                                <span className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-green-500 pulse-dot" /> System Active</span>
+                                <span className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-[#4f8ef7]" /> {mode} MODE</span>
+                            </div>
+                            <div className="text-[10px] font-bold text-[#444466] uppercase tracking-widest leading-none">
+                                Ask Connie Ai • Intelligence v2.0
                             </div>
                         </div>
                     </div>
-                </div>
-            </footer>
+                </footer>
+
+                {error && (
+                    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-red-500/90 backdrop-blur-md text-white px-6 py-3 rounded-2xl text-xs font-bold shadow-2xl z-[100] animate-in slide-in-from-bottom-4 duration-300 flex items-center gap-3">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        {error}
+                        <button onClick={() => setError(null)} className="ml-2 hover:opacity-70 transition-colors">CLOSE</button>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

@@ -64,11 +64,22 @@ CREATE TABLE IF NOT EXISTS public.organization_members (
     UNIQUE(organization_id, user_id)
 );
 
--- 4. Chat Messages (With History & Tenant Isolation)
+-- 4. Chat Sessions (to track multiple conversations)
+CREATE TABLE IF NOT EXISTS public.chat_sessions (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE,
+    title TEXT DEFAULT 'New Conversation',
+    mode TEXT DEFAULT 'general'
+);
+
+-- 5. Chat Messages (With History & Tenant Isolation)
 CREATE TABLE IF NOT EXISTS public.chat_messages (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    session_id UUID REFERENCES public.chat_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
     mode TEXT DEFAULT 'general',
@@ -76,11 +87,12 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
 );
 
 
--- 5. Pesapal Transactions
+-- 6. Pesapal Transactions
 CREATE TABLE IF NOT EXISTS public.pesapal_transactions (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE,
     order_tracking_id TEXT UNIQUE,
     merchant_reference TEXT UNIQUE NOT NULL,
     amount NUMERIC(10,2) NOT NULL,
@@ -90,7 +102,7 @@ CREATE TABLE IF NOT EXISTS public.pesapal_transactions (
     description TEXT
 );
 
--- 6. Notifications
+-- 7. Notifications
 CREATE TABLE IF NOT EXISTS public.notifications (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
@@ -108,6 +120,7 @@ CREATE TABLE IF NOT EXISTS public.notifications (
 ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.organization_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pesapal_transactions ENABLE ROW LEVEL SECURITY;
 
@@ -137,21 +150,21 @@ DROP POLICY IF EXISTS "Users can view their own memberships" ON public.organizat
 CREATE POLICY "Users can view their own memberships" ON public.organization_members
     FOR SELECT USING (user_id = auth.uid());
 
-DROP POLICY IF EXISTS "Users can create their own memberships" ON public.organization_members;
-CREATE POLICY "Users can create their own memberships" ON public.organization_members
-    FOR INSERT WITH CHECK (user_id = auth.uid());
+DROP POLICY IF EXISTS "Users can manage their own sessions" ON public.chat_sessions;
+CREATE POLICY "Users can manage their own sessions" ON public.chat_sessions
+    FOR ALL USING (user_id = auth.uid());
 
-DROP POLICY IF EXISTS "Users can manage their organization chat history" ON public.chat_messages;
-CREATE POLICY "Users can manage their organization chat history" ON public.chat_messages
+DROP POLICY IF EXISTS "Users can manage their session messages" ON public.chat_messages;
+CREATE POLICY "Users can manage their session messages" ON public.chat_messages
     FOR ALL USING (
-        organization_id IN (
-            SELECT organization_id FROM public.organization_members WHERE user_id = auth.uid()
-        )
+        user_id = auth.uid() OR 
+        EXISTS (SELECT 1 FROM public.chat_sessions WHERE id = session_id AND user_id = auth.uid())
     );
 
 DROP POLICY IF EXISTS "Users can view their organization transactions" ON public.pesapal_transactions;
 CREATE POLICY "Users can view their organization transactions" ON public.pesapal_transactions
     FOR SELECT USING (
+        user_id = auth.uid() OR
         organization_id IN (
             SELECT organization_id FROM public.organization_members WHERE user_id = auth.uid()
         )
