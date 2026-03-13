@@ -107,6 +107,7 @@ export default function App() {
     const [view, setView] = useState<'chat' | 'admin'>('chat');
     const [hasMore, setHasMore] = useState(true);
     const [isOldHistoryLoading, setIsOldHistoryLoading] = useState(false);
+    const [isResettingPassword, setIsResettingPassword] = useState(false);
 
     // Multi-Chat State
     const [sessions, setSessions] = useState<any[]>([]);
@@ -124,9 +125,16 @@ export default function App() {
             setIsAuthLoading(false);
         });
 
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
             setSession(session);
             setIsAuthLoading(false);
+            
+            if (event === 'PASSWORD_RECOVERY') {
+                setIsResettingPassword(true);
+            }
+            if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+                setIsResettingPassword(false);
+            }
         });
 
         return () => subscription.unsubscribe();
@@ -550,10 +558,19 @@ export default function App() {
         );
     }
 
-    if (!session) {
+    if (!session || isResettingPassword) {
         return (
             <div className="min-h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] flex items-center justify-center p-4">
-                <AuthUI />
+                <AuthUI initialView={isResettingPassword ? 'update_password' : 'sign_in'} />
+                {isResettingPassword && (
+                    <button 
+                        onClick={() => setIsResettingPassword(false)}
+                        className="fixed top-4 left-4 text-[#555577] hover:text-white flex items-center gap-2 p-2 bg-[#12121e] rounded-xl border border-[#1e1e35] transition-all"
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Back to Login</span>
+                    </button>
+                )}
             </div>
         );
     }

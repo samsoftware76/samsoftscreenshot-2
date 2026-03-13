@@ -4,7 +4,7 @@ import { Auth } from '@supabase/auth-ui-react';
 import { ThemeSupa } from '@supabase/auth-ui-shared';
 import { supabase } from '@/integrations/supabase/client';
 
-export default function AuthUI() {
+export default function AuthUI({ initialView = 'sign_in' }: { initialView?: 'sign_in' | 'sign_up' | 'magic_link' | 'forgotten_password' | 'update_password' }) {
     return (
         <div className="w-full max-w-sm mx-auto p-8 bg-[#0A0A0A] rounded-[2.5rem] shadow-2xl border border-white/10">
             <div className="flex flex-col items-center mb-8">
@@ -17,6 +17,7 @@ export default function AuthUI() {
 
             <Auth
                 supabaseClient={supabase}
+                view={initialView}
                 appearance={{
                     theme: ThemeSupa,
                     variables: {
