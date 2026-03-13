@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v11.2] Super Discovery + Version Verification Active.");
+console.log("[STABILIZER v11.3] Multi-modal + Session Restore Active.");
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -25,21 +25,31 @@ serve(async (req: Request) => {
     if (!user) throw new Error('Unauthorized');
 
     const body = await req.json().catch(() => ({}));
-    const { action, messages, sessionId, cursor, limit = 20 } = body;
+    const { action, messages, sessionId, mode, title } = body;
 
     // --- Key Management ---
     const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
     const rawKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
     const apiKeys = [...new Set(rawKeys)];
 
-    // --- Action: Ping (v11.2) ---
+    // --- Action: Ping (v11.3) ---
     if (action === 'ping') {
-      return new Response(JSON.stringify({ status: 'ok', version: '11.2', uniqueKeys: apiKeys.length }), {
+      return new Response(JSON.stringify({ status: 'ok', version: '11.3', uniqueKeys: apiKeys.length }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
     // --- Session Handlers ---
+    if (action === 'create-session') {
+      const { data, error } = await adminClient.from('chat_sessions').insert({
+        user_id: user.id,
+        mode: mode || 'general',
+        title: title || 'New Chat'
+      }).select().single();
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     if (action === 'get-sessions') {
       const { data: sessions, error } = await adminClient.from('chat_sessions').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
       if (error) throw error;
@@ -47,7 +57,8 @@ serve(async (req: Request) => {
     }
 
     if (action === 'get-history') {
-      let query = adminClient.from('chat_messages').select('*').eq('user_id', user.id).eq('session_id', sessionId).order('created_at', { ascending: false }).limit(limit);
+      const { sessionId: historyId, cursor, limit = 20 } = body;
+      let query = adminClient.from('chat_messages').select('*').eq('user_id', user.id).eq('session_id', historyId).order('created_at', { ascending: false }).limit(limit);
       if (cursor) query = query.lt('created_at', cursor);
       const { data: messages, error } = await query;
       if (error) throw error;
@@ -74,7 +85,6 @@ serve(async (req: Request) => {
       for (const endpoint of endpoints) {
         if (aiText) break;
         
-        // 1. DISCOVER: Fetch real models list
         let discoveredModels: string[] = [];
         try {
           const dResp = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models?key=${key}`);
@@ -88,7 +98,6 @@ serve(async (req: Request) => {
           console.warn(`[DISCOVERY FAIL] key ${key.substring(0,6)}...: ${e.message}`);
         }
 
-        // 2. STATIC FALLBACK: Verified model IDs for maximum reliability
         const staticList = [
           'models/gemini-1.5-flash',
           'models/gemini-1.5-flash-latest',
@@ -104,12 +113,32 @@ serve(async (req: Request) => {
 
         for (const fullModelName of modelsToTry) {
           try {
+            // v11.3: Multi-modal Support
             const payload = {
               contents: messages.map((m: any, i: number) => {
                 let role = (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user';
-                let text = m.text || m.content || m.parts?.[0]?.text || '';
+                const parts: any[] = [];
+                
+                // Add text
+                let text = m.text || m.content || '';
                 if (i === 0 && role === 'user') text = `[INSTRUCTION: Act as Connie AI]\n\nUSER: ${text}`;
-                return { role, parts: [{ text }] };
+                if (text) parts.push({ text });
+
+                // Add files (inline_data)
+                if (m.files && Array.isArray(m.files)) {
+                  m.files.forEach((f: any) => {
+                    if (f.data && f.mimeType) {
+                      parts.push({
+                        inline_data: {
+                          mime_type: f.mimeType,
+                          data: f.data
+                        }
+                      });
+                    }
+                  });
+                }
+
+                return { role, parts };
               })
             };
 
@@ -125,11 +154,10 @@ serve(async (req: Request) => {
 
             if (!res.ok) {
               const errSnippet = JSON.stringify(resJson).substring(0, 150);
-              console.error(`[FAIL v11.2] ${fullModelName}@${endpoint}: Status ${status}`);
+              console.error(`[FAIL v11.3] ${fullModelName}@${endpoint}: Status ${status}`);
               allAttempts.push({ model: fullModelName, endpoint, status, error: errSnippet });
               
               if (status === 429 && JSON.stringify(resJson).includes("limit: 0")) {
-                console.warn(`[DEAD KEY] Exhausted. Skipping.`);
                 deadKeys.add(key);
                 break; 
               }
@@ -148,11 +176,18 @@ serve(async (req: Request) => {
     }
 
     if (!aiText) {
-      throw new Error(`AI Engines Exhausted (VERSION 11.2). Attempted ${allAttempts.length} variations. Top Fail: ${JSON.stringify(allAttempts[0] || "No Models Found")}`);
+      throw new Error(`AI Engines Exhausted (VERSION 11.3). Attempted ${allAttempts.length} variations. Top Fail: ${JSON.stringify(allAttempts[0] || "No Models Found")}`);
     }
 
+    // Save message and decrement credits
     if (sessionId) {
-      await adminClient.from('chat_messages').insert({ user_id: user.id, session_id: sessionId, role: 'assistant', content: aiText, metadata: { engine: 'stabilizer-v11.2' } });
+      await adminClient.from('chat_messages').insert({ 
+        user_id: user.id, 
+        session_id: sessionId, 
+        role: 'assistant', 
+        content: aiText, 
+        metadata: { engine: 'stabilizer-v11.3' } 
+      });
       await adminClient.rpc('decrement_credits', { user_id: user.id });
     }
 
