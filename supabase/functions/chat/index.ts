@@ -175,19 +175,36 @@ serve(async (req: Request) => {
         for (const model of models) {
           try {
             console.log(`[DEBUG] Trying: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            
+            const systemPrompt = getSystemPrompt(mode || 'general');
+            const isModern = model.includes('1.5') || model.includes('2.0');
+            
+            const payload: any = {
+              contents: messages.map((m: any, i: number) => {
+                let text = m.text || m.content || '';
+                // Prepend system prompt to first user message if model is legacy
+                if (i === 0 && !isModern) {
+                   text = `[SYSTEM INSTRUCTION: ${systemPrompt}]\n\n${text}`;
+                }
+                return {
+                  role: (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user',
+                  parts: [
+                    { text },
+                    ...(m.files || []).map((f: any) => ({ inline_data: { mime_type: f.mimeType, data: f.data } }))
+                  ]
+                };
+              })
+            };
+
+            // Only add system_instruction for modern models
+            if (isModern) {
+              payload.system_instruction = { parts: { text: systemPrompt } };
+            }
+
             const res = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models/${model}:generateContent?key=${key}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: messages.map((m: any) => ({
-                  role: (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user',
-                  parts: [
-                    { text: m.text || m.content || '' },
-                    ...(m.files || []).map((f: any) => ({ inline_data: { mime_type: f.mimeType, data: f.data } }))
-                  ]
-                })),
-                system_instruction: { parts: { text: getSystemPrompt(mode || 'general') } },
-              }),
+              body: JSON.stringify(payload),
             });
 
             if (res.status === 429) {
