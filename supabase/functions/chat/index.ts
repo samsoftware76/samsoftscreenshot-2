@@ -92,17 +92,17 @@ serve(async (req: Request) => {
     }
 
     // --- Action: Chat (AI Logic) ---
-    // VERIFIED MODELS (Ordered by priority/speed)
+    // v10.5 RELIABILITY: Prioritize 1.5-Flash (stable) over 2.0-Flash (strict limits)
     const models = [
-      'gemini-2.0-flash', 
       'gemini-1.5-flash', 
-      'gemini-1.5-flash-8b', // Highly efficient fallback
+      'gemini-1.5-flash-8b', 
+      'gemini-2.0-flash', 
       'gemini-pro-latest',
-      'gemini-1.5-pro'       // Capable but slow last-resort
+      'gemini-1.5-pro'
     ];
     const endpoints = ['v1beta', 'v1'];
     let aiText = '';
-    let firstFail = null;
+    const allAttempts: any[] = [];
 
     for (const key of apiKeys) {
       if (aiText) break;
@@ -135,27 +135,29 @@ serve(async (req: Request) => {
               body: JSON.stringify(payload),
             });
 
+            const status = res.status;
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v10.4] ${model}@${endpoint}:`, errTxt);
-              // Log 429 specifically but keep trying other models
-              if (!firstFail || res.status === 429) {
-                firstFail = { status: res.status, body: errTxt, model, endpoint };
-              }
+              console.error(`[FAIL v10.5] ${model}@${endpoint}: Status ${status}`);
+              allAttempts.push({ model, endpoint, status, error: errTxt.substring(0, 500) });
               continue;
             }
 
             const d = await res.json();
             aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
+            else allAttempts.push({ model, endpoint, status, error: "No text in response candidates" });
+
           } catch (err) { 
-            if (!firstFail) firstFail = { status: 'ERROR', message: err.message };
+            allAttempts.push({ model, endpoint, status: 'EXCEPTION', error: err.message });
           }
         }
       }
     }
 
-    if (!aiText) throw new Error(`AI Engines Exhausted (Quota Likely Hit). Diagnosis: ${JSON.stringify(firstFail)}`);
+    if (!aiText) {
+      throw new Error(`AI Engines Exhausted (Quota Likely Hit). Attempted ${allAttempts.length} combinations: ${JSON.stringify(allAttempts)}`);
+    }
 
     if (sessionId) {
       await adminClient.from('chat_messages').insert({ 
