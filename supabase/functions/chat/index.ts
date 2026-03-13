@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v4.0] Edge Function 'chat' module loaded successfully.");
+console.log("[STABILIZER v6.0] Edge Function 'chat' module loaded successfully.");
 
 function getSystemPrompt(mode: string): string {
   if (mode === 'code') return `You are the "Elite Challenge Solver". Provide the COMPLETE WORKING CODE SOLUTION. Detect the language. Format: description, code block, steps, hints, difficulty.`;
@@ -18,7 +18,7 @@ function getSystemPrompt(mode: string): string {
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
-  console.log(`[DEBUG v4.0] Received ${req.method} request`);
+  console.log(`[DEBUG v6.0] Received ${req.method} request`);
 
   try {
     const authHeader = req.headers.get('Authorization');
@@ -51,7 +51,7 @@ serve(async (req: Request) => {
     }
 
     const { action, messages, mode, sessionId, title, cursor, limit = 20 } = body;
-    console.log(`[DEBUG v4.0] Action: ${action || 'default-chat'}`);
+    console.log(`[DEBUG v6.0] Action: ${action || 'default-chat'}`);
 
     // ACTION: PING (With Logic Diagnostic)
     if (action === 'ping') {
@@ -65,7 +65,7 @@ serve(async (req: Request) => {
       return new Response(JSON.stringify({ 
         status: 'ok', 
         user: user.id,
-        version: '4.0',
+        version: '6.0',
         diagnostics: report 
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -165,8 +165,8 @@ serve(async (req: Request) => {
     let aiText = '';
     let firstErrorReason = null;
 
-    // Standard Model List with LATEST identifiers
-    const models = ['gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-1.0-pro'];
+    // Standard Model List with PROVEN stable identifiers
+    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
     const endpoints = ['v1beta', 'v1']; 
 
     for (const [keyIdx, key] of apiKeys.entries()) {
@@ -178,7 +178,7 @@ serve(async (req: Request) => {
             // gemini-1.0-pro is flaky on v1 in many regions
             if (endpoint === 'v1' && model === 'gemini-1.0-pro') continue;
 
-            console.log(`[DEBUG v5.0] Deep Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            console.log(`[DEBUG v6.0] Deep Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
             
             const systemPrompt = getSystemPrompt(mode || 'general');
             
@@ -206,7 +206,7 @@ serve(async (req: Request) => {
 
             if (!res.ok) {
               const errText = await res.text();
-              console.error(`[FAIL v5.0] ${model}@${endpoint}:`, errText);
+              console.error(`[FAIL v6.0] ${model}@${endpoint}:`, errText);
               if (!firstErrorReason) firstErrorReason = { status: res.status, body: errText, model, endpoint, keyIdx };
               continue;
             }
