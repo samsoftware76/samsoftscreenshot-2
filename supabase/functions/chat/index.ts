@@ -92,11 +92,13 @@ serve(async (req: Request) => {
     }
 
     // --- Action: Chat (AI Logic) ---
-    // VERIFIED MODELS
+    // VERIFIED MODELS (Ordered by priority/speed)
     const models = [
       'gemini-2.0-flash', 
       'gemini-1.5-flash', 
-      'gemini-pro-latest'
+      'gemini-1.5-flash-8b', // Highly efficient fallback
+      'gemini-pro-latest',
+      'gemini-1.5-pro'       // Capable but slow last-resort
     ];
     const endpoints = ['v1beta', 'v1'];
     let aiText = '';
@@ -135,20 +137,25 @@ serve(async (req: Request) => {
 
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v10.3] ${model}@${endpoint}:`, errTxt);
-              if (!firstFail) firstFail = { status: res.status, body: errTxt, model, endpoint };
+              console.error(`[FAIL v10.4] ${model}@${endpoint}:`, errTxt);
+              // Log 429 specifically but keep trying other models
+              if (!firstFail || res.status === 429) {
+                firstFail = { status: res.status, body: errTxt, model, endpoint };
+              }
               continue;
             }
 
             const d = await res.json();
             aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
-          } catch (err) { if (!firstFail) firstFail = err; }
+          } catch (err) { 
+            if (!firstFail) firstFail = { status: 'ERROR', message: err.message };
+          }
         }
       }
     }
 
-    if (!aiText) throw new Error(`AI Engines Exhausted. Diagnosis: ${JSON.stringify(firstFail)}`);
+    if (!aiText) throw new Error(`AI Engines Exhausted (Quota Likely Hit). Diagnosis: ${JSON.stringify(firstFail)}`);
 
     if (sessionId) {
       await adminClient.from('chat_messages').insert({ 
