@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v10.3] Production Multi-Action Engine Active.");
+console.log("[STABILIZER v10.7] Discovery Engine Active.");
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -31,19 +31,31 @@ serve(async (req: Request) => {
     const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
     const diagnostics: any = {};
     keysToCheck.forEach(k => { diagnostics[k] = !!Deno.env.get(k); });
-    
-    // v10.6: Deduplicate keys to avoid wasting quota on identical keys
     const rawKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
     const apiKeys = [...new Set(rawKeys)];
 
-    // --- Action: Ping (v10.6) ---
+    // --- Action: Ping (v10.7) ---
     if (action === 'ping') {
       return new Response(JSON.stringify({ 
         status: 'ok', 
-        version: '10.6', 
+        version: '10.7', 
         diagnostics,
         uniqueKeys: apiKeys.length
       }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // --- Action: List Models (Discovery) ---
+    if (action === 'models') {
+      const results: any[] = [];
+      for (const key of apiKeys) {
+         try {
+           const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+           results.push({ key: key.substring(0,6) + "...", data: await res.json() });
+         } catch (e) { results.push({ error: e.message }); }
+      }
+      return new Response(JSON.stringify({ results }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
@@ -96,23 +108,25 @@ serve(async (req: Request) => {
     }
 
     // --- Action: Chat (AI Logic) ---
-    // v10.6: Expanded model list for maximum reach
+    // v10.7: Expanded and re-prioritized for resilience
     const models = [
       'gemini-1.5-flash', 
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-flash-002',
       'gemini-1.5-flash-8b',
+      'gemini-1.0-pro',      // Legacy but often has better quota availability
       'gemini-2.0-flash', 
       'gemini-pro',
-      'gemini-pro-latest',
       'gemini-1.5-pro'
     ];
-    const endpoints = ['v1beta', 'v1'];
+    // Try v1 first (more stable), then v1beta
+    const endpoints = ['v1', 'v1beta'];
     let aiText = '';
     const allAttempts: any[] = [];
+    const deadKeys = new Set<string>();
 
     for (const key of apiKeys) {
       if (aiText) break;
+      if (deadKeys.has(key)) continue;
+
       for (const endpoint of endpoints) {
         if (aiText) break;
         for (const model of models) {
@@ -136,7 +150,8 @@ serve(async (req: Request) => {
               })
             };
 
-            const res = await fetch(`https://generativelanguage.googleapis.com/${endpoint}/models/${model}:generateContent?key=${key}`, {
+            const url = `https://generativelanguage.googleapis.com/${endpoint}/models/${model}:generateContent?key=${key}`;
+            const res = await fetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload),
@@ -145,15 +160,22 @@ serve(async (req: Request) => {
             const status = res.status;
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v10.6] ${model}@${endpoint}: Status ${status}`);
+              console.error(`[FAIL v10.7] ${model}@${endpoint}: Status ${status}`);
               allAttempts.push({ model, endpoint, status, error: errTxt.substring(0, 100) });
+              
+              // If specifically "Limit 0", this key is dead for this model/project
+              if (status === 429 && errTxt.includes("limit: 0")) {
+                console.warn(`[QUOTA DEAD] Key ${key.substring(0,6)}... hit limit 0. Skipping for other models.`);
+                deadKeys.add(key);
+                break; // Stop trying this key
+              }
               continue;
             }
 
             const d = await res.json();
             aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
-            else allAttempts.push({ model, endpoint, status, error: "No text candidates" });
+            else allAttempts.push({ model, endpoint, status, error: "Empty candidates" });
 
           } catch (err) { 
             allAttempts.push({ model, endpoint, status: 'EXC', error: err.message });
@@ -172,7 +194,7 @@ serve(async (req: Request) => {
         session_id: sessionId, 
         role: 'assistant', 
         content: aiText,
-        metadata: { engine: 'gemini-stabilizer-v10.3' }
+        metadata: { engine: 'stabilizer-v10.7' }
       });
       await adminClient.rpc('decrement_credits', { user_id: user.id });
     }
