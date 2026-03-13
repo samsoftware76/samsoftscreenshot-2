@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v10.0] Proof-Verified Engine Active.");
+console.log("[STABILIZER v10.3] Production Multi-Action Engine Active.");
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -18,36 +18,87 @@ serve(async (req: Request) => {
 
     if (!authHeader || !supabaseUrl || !supabaseServiceKey) throw new Error("Missing Secrets");
 
-    const supabase = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, { global: { headers: { Authorization: authHeader } } });
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createClient(supabaseUrl, Deno.env.get('SUPABASE_ANON_KEY')!, { global: { headers: { Authorization: authHeader } } });
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('Unauthorized');
 
     const body = await req.json().catch(() => ({}));
-    const { action, messages, mode, sessionId } = body;
+    const { action, messages, mode, sessionId, cursor, limit = 20 } = body;
 
-    // --- Action: Ping (v10.0) ---
+    // --- AI Configuration & Diagnostics ---
+    const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
+    const diagnostics: any = {};
+    keysToCheck.forEach(k => { diagnostics[k] = !!Deno.env.get(k); });
+    const apiKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
+
+    // --- Action: Ping (v10.3) ---
     if (action === 'ping') {
-      return new Response(JSON.stringify({ status: 'ok', version: '10.0', discovery: true }), {
+      return new Response(JSON.stringify({ 
+        status: 'ok', 
+        version: '10.3', 
+        diagnostics 
+      }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    // --- AI Configuration ---
-    const apiKeys = [Deno.env.get('GEMINI_API_KEY'), Deno.env.get('GEMINI_KEY_2'), Deno.env.get('GEMINI_KEY_3'), Deno.env.get('GOOGLEAI_API_KEY')].filter(Boolean);
-    
-    // VERIFIED MODELS FROM TERMINAL DISCOVERY
-    const models = [
-      'gemini-flash-latest', 
-      'gemini-2.0-flash', 
-      'gemini-2.5-flash', 
-      'gemini-pro-latest',
-      'gemini-1.5-flash', // Fallback
-      'gemini-1.5-pro'    // Fallback
-    ];
+    // --- Action: Get Sessions ---
+    if (action === 'get-sessions') {
+      const { data: sessions, error } = await adminClient
+        .from('chat_sessions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
 
-    const endpoints = ['v1beta', 'v1']; 
+      if (error) throw error;
+      return new Response(JSON.stringify({ sessions }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // --- Action: Get History ---
+    if (action === 'get-history') {
+      let query = adminClient
+        .from('chat_messages')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (cursor) query = query.lt('created_at', cursor);
+
+      const { data: messages, error } = await query;
+      if (error) throw error;
+      return new Response(JSON.stringify({ messages, hasMore: messages.length === limit }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // --- Action: Delete Session ---
+    if (action === 'delete-session') {
+      const { error } = await adminClient
+        .from('chat_sessions')
+        .delete()
+        .eq('id', sessionId)
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // --- Action: Chat (AI Logic) ---
+    // VERIFIED MODELS
+    const models = [
+      'gemini-2.0-flash', 
+      'gemini-1.5-flash', 
+      'gemini-pro-latest'
+    ];
+    const endpoints = ['v1beta', 'v1'];
     let aiText = '';
     let firstFail = null;
 
@@ -84,7 +135,7 @@ serve(async (req: Request) => {
 
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v10.0] ${model}@${endpoint}:`, errTxt);
+              console.error(`[FAIL v10.3] ${model}@${endpoint}:`, errTxt);
               if (!firstFail) firstFail = { status: res.status, body: errTxt, model, endpoint };
               continue;
             }
@@ -100,7 +151,13 @@ serve(async (req: Request) => {
     if (!aiText) throw new Error(`AI Engines Exhausted. Diagnosis: ${JSON.stringify(firstFail)}`);
 
     if (sessionId) {
-      await adminClient.from('chat_messages').insert({ user_id: user.id, session_id: sessionId, role: 'assistant', content: aiText });
+      await adminClient.from('chat_messages').insert({ 
+        user_id: user.id, 
+        session_id: sessionId, 
+        role: 'assistant', 
+        content: aiText,
+        metadata: { engine: 'gemini-stabilizer-v10.3' }
+      });
       await adminClient.rpc('decrement_credits', { user_id: user.id });
     }
 
