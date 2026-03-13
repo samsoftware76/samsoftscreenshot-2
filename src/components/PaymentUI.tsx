@@ -32,7 +32,7 @@ export default function PaymentUI({ session }: { session: Session }) {
                     email: session.user.email,
                     firstName: session.user.email?.split('@')[0] || 'User',
                     lastName: '',
-                    description: `Challenge Solver Credits: ${tier.credits} Points (${tier.label})`,
+                    description: `Ask Connie Ai Credits: ${tier.credits} Points (${tier.label})`,
                     callback_url: window.location.origin,
                 }
             });
