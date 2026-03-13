@@ -164,9 +164,9 @@ serve(async (req: Request) => {
     let aiText = '';
     let lastErrorDetails = null;
 
-    // Model Fallback List
-    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'];
-    const endpoints = ['v1beta', 'v1']; // Added v1 fallback
+    // Standard Model List with Stable Identifiers
+    const models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro'];
+    const endpoints = ['v1beta', 'v1']; 
 
     for (const [keyIdx, key] of apiKeys.entries()) {
       if (aiText) break;
@@ -174,30 +174,29 @@ serve(async (req: Request) => {
         if (aiText) break;
         for (const model of models) {
           try {
-            console.log(`[DEBUG] Trying: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            if (endpoint === 'v1' && model === 'gemini-1.0-pro') continue;
+
+            console.log(`[DEBUG] Sync Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
             
             const systemPrompt = getSystemPrompt(mode || 'general');
-            const isModern = model.includes('1.5') || model.includes('2.0');
+            // Strict check: Only use system_instruction on v1beta
+            const useSystemField = (model.includes('1.5') || model.includes('2.0')) && endpoint === 'v1beta';
             
             const payload: any = {
               contents: messages.map((m: any, i: number) => {
                 let text = m.text || m.content || '';
-                // Prepend system prompt to first user message if model is legacy
-                if (i === 0 && !isModern) {
-                   text = `[SYSTEM INSTRUCTION: ${systemPrompt}]\n\n${text}`;
+                // If not using the specialized field, inject the prompt into the first user message
+                if (i === 0 && !useSystemField) {
+                   text = `[SYSTEM-INSTRUCTION: ${systemPrompt}]\n\nUser Question: ${text}`;
                 }
                 return {
                   role: (m.role === 'assistant' || m.role === 'model') ? 'model' : 'user',
-                  parts: [
-                    { text },
-                    ...(m.files || []).map((f: any) => ({ inline_data: { mime_type: f.mimeType, data: f.data } }))
-                  ]
+                  parts: [{ text }]
                 };
               })
             };
 
-            // Only add system_instruction for modern models
-            if (isModern) {
+            if (useSystemField) {
               payload.system_instruction = { parts: { text: systemPrompt } };
             }
 
