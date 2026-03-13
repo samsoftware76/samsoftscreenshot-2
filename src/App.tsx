@@ -12,6 +12,8 @@ import PaymentUI from '@/components/PaymentUI';
 import AdminDashboard from '@/components/AdminDashboard';
 import SolutionSteps from '@/components/SolutionSteps';
 import VoiceRecorder from '@/components/VoiceRecorder';
+import LandingPage from '@/components/LandingPage';
+import { Copy, Check, ExternalLink } from 'lucide-react';
 
 interface LocalMessagePayload {
     role: 'user' | 'model';
@@ -108,6 +110,7 @@ export default function App() {
     const [hasMore, setHasMore] = useState(true);
     const [isOldHistoryLoading, setIsOldHistoryLoading] = useState(false);
     const [isResettingPassword, setIsResettingPassword] = useState(false);
+    const [showAuth, setShowAuth] = useState(false);
 
     // Multi-Chat State
     const [sessions, setSessions] = useState<any[]>([]);
@@ -129,6 +132,9 @@ export default function App() {
             setSession(session);
             setIsAuthLoading(false);
             
+            if (event === 'SIGNED_IN') {
+                setShowAuth(false);
+            }
             if (event === 'PASSWORD_RECOVERY') {
                 setIsResettingPassword(true);
             }
@@ -545,38 +551,60 @@ export default function App() {
 
     if (isAuthLoading) {
         return (
-            <div className="flex flex-col items-center justify-center h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A]">
-                <div className="w-16 h-16 bg-black rounded-full flex items-center justify-center animate-pulse mb-6">
-                    <img src="/logo.svg" alt="Logo" className="w-10 h-10" />
-                </div>
-                <div className="flex gap-1.5">
-                    <div className="w-2 h-2 bg-black dark:bg-white rounded-full animate-bounce [animation-delay:-0.3s]" />
-                    <div className="w-2 h-2 bg-black dark:bg-white rounded-full animate-bounce [animation-delay:-0.15s]" />
-                    <div className="w-2 h-2 bg-black dark:bg-white rounded-full animate-bounce" />
+            <div className="min-h-screen bg-[#08080f] flex items-center justify-center p-6 text-center">
+                <div className="flex flex-col items-center gap-6">
+                    <div className="w-16 h-16 bg-gradient-to-br from-[#4f8ef7] to-[#9f6ef5] rounded-2xl flex items-center justify-center animate-pulse shadow-2xl shadow-[#4f8ef7]/20">
+                        <img src="/logo.svg" alt="Connie" className="w-10 h-10 invert" />
+                    </div>
+                    <div className="flex gap-2">
+                        <div className="w-2 h-2 bg-[#4f8ef7] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <div className="w-2 h-2 bg-[#4f8ef7] rounded-full animate-bounce" style={{ animationDelay: '200ms' }} />
+                        <div className="w-2 h-2 bg-[#4f8ef7] rounded-full animate-bounce" style={{ animationDelay: '400ms' }} />
+                    </div>
                 </div>
             </div>
         );
     }
 
-    if (!session || isResettingPassword) {
+    if (!session && !showAuth) {
+        return <LandingPage onGetStarted={() => setShowAuth(true)} />;
+    }
+
+    if (!session && showAuth) {
         return (
-            <div className="min-h-screen bg-[#FCF1E9] dark:bg-[#0A0A0A] flex items-center justify-center p-4">
-                <AuthUI initialView={isResettingPassword ? 'update_password' : 'sign_in'} />
-                {isResettingPassword && (
-                    <button 
-                        onClick={() => setIsResettingPassword(false)}
-                        className="fixed top-4 left-4 text-[#555577] hover:text-white flex items-center gap-2 p-2 bg-[#12121e] rounded-xl border border-[#1e1e35] transition-all"
-                    >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Back to Login</span>
-                    </button>
-                )}
+            <div className="min-h-screen bg-[#08080f] flex flex-col items-center justify-center p-6 sm:p-12 relative overflow-hidden">
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full max-w-7xl h-full -z-10 pointer-events-none opacity-20">
+                    <div className="absolute top-0 right-0 w-96 h-96 bg-[#4f8ef7]/20 blur-3xl rounded-full" />
+                    <div className="absolute bottom-0 left-0 w-96 h-96 bg-[#9f6ef5]/20 blur-3xl rounded-full" />
+                </div>
+                
+                <div className="w-full max-w-md space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="text-center space-y-4">
+                        <div 
+                            className="inline-flex items-center gap-2 cursor-pointer text-[#555577] hover:text-white transition-colors mb-4 group"
+                            onClick={() => setShowAuth(false)}
+                        >
+                            <svg className="w-4 h-4 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                            <span className="text-[10px] font-black uppercase tracking-widest">Back to Home</span>
+                        </div>
+                        <div className="w-16 h-16 bg-gradient-to-br from-[#4f8ef7] to-[#9f6ef5] rounded-2xl flex items-center justify-center mx-auto shadow-2xl shadow-[#4f8ef7]/20">
+                            <img src="/logo.svg" alt="Connie" className="w-10 h-10 invert" />
+                        </div>
+                        <h2 className="text-3xl font-black text-white tracking-tight">
+                            {isResettingPassword ? "Reset Password" : "Welcome Back"}
+                        </h2>
+                        <p className="text-sm text-[#555577]">
+                            {isResettingPassword ? "Enter your new credentials below." : "Sign in to access your intelligence engine."}
+                        </p>
+                    </div>
+                    <AuthUI initialView={isResettingPassword ? 'update_password' : 'sign_in'} />
+                </div>
             </div>
         );
     }
 
     return (
-        <div className="flex h-screen bg-[#08080f] text-[#e8e8f8] font-sans selection:bg-[#4f8ef7]/30 selection:text-white overflow-hidden relative">
+        <div className="max-h-screen flex h-screen bg-[#08080f] text-[#e8e8f8] overflow-hidden selection:bg-[#4f8ef7]/30">
             {/* Drawer Backdrop Overlay */}
             <div
                 className={`fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
