@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER v10.7] Discovery Engine Active.");
+console.log("[STABILIZER v10.8] Resilient Logic Active.");
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -31,31 +31,19 @@ serve(async (req: Request) => {
     const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
     const diagnostics: any = {};
     keysToCheck.forEach(k => { diagnostics[k] = !!Deno.env.get(k); });
+    
+    // v10.8: Deduplicate keys to avoid redundant 429 hits
     const rawKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
     const apiKeys = [...new Set(rawKeys)];
 
-    // --- Action: Ping (v10.7) ---
+    // --- Action: Ping (v10.8) ---
     if (action === 'ping') {
       return new Response(JSON.stringify({ 
         status: 'ok', 
-        version: '10.7', 
+        version: '10.8', 
         diagnostics,
         uniqueKeys: apiKeys.length
       }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    // --- Action: List Models (Discovery) ---
-    if (action === 'models') {
-      const results: any[] = [];
-      for (const key of apiKeys) {
-         try {
-           const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
-           results.push({ key: key.substring(0,6) + "...", data: await res.json() });
-         } catch (e) { results.push({ error: e.message }); }
-      }
-      return new Response(JSON.stringify({ results }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
@@ -108,16 +96,22 @@ serve(async (req: Request) => {
     }
 
     // --- Action: Chat (AI Logic) ---
-    // v10.7: Expanded and re-prioritized for resilience
+    // v10.8: Expanded model variations to resolve 404s
     const models = [
       'gemini-1.5-flash', 
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash-001',
+      'gemini-1.5-flash-002',
       'gemini-1.5-flash-8b',
-      'gemini-1.0-pro',      // Legacy but often has better quota availability
+      'gemini-1.5-flash-8b-latest',
       'gemini-2.0-flash', 
+      'gemini-2.0-flash-exp',
+      'gemini-1.0-pro',
       'gemini-pro',
-      'gemini-1.5-pro'
+      'gemini-1.5-pro',
+      'gemini-1.5-pro-latest'
     ];
-    // Try v1 first (more stable), then v1beta
+    // v1 is often more stable for GA models; v1beta for early access
     const endpoints = ['v1', 'v1beta'];
     let aiText = '';
     const allAttempts: any[] = [];
@@ -158,24 +152,25 @@ serve(async (req: Request) => {
             });
 
             const status = res.status;
+            const resJson = await res.json().catch(() => ({}));
+            
             if (!res.ok) {
-              const errTxt = await res.text();
-              console.error(`[FAIL v10.7] ${model}@${endpoint}: Status ${status}`);
-              allAttempts.push({ model, endpoint, status, error: errTxt.substring(0, 100) });
+              const errTxt = JSON.stringify(resJson).substring(0, 200);
+              console.error(`[FAIL v10.8] ${model}@${endpoint}: Status ${status}`);
+              allAttempts.push({ model, endpoint, status, error: errTxt });
               
-              // If specifically "Limit 0", this key is dead for this model/project
-              if (status === 429 && errTxt.includes("limit: 0")) {
-                console.warn(`[QUOTA DEAD] Key ${key.substring(0,6)}... hit limit 0. Skipping for other models.`);
+              // If daily quota exhausted (Limit: 0), mark key as dead for this request
+              if (status === 429 && JSON.stringify(resJson).includes("limit: 0")) {
+                console.warn(`[QUOTA EXHAUSTED] Key ${key.substring(0,6)}... hit limit 0. Skipping for other variants.`);
                 deadKeys.add(key);
-                break; // Stop trying this key
+                break; 
               }
               continue;
             }
 
-            const d = await res.json();
-            aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            aiText = resJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
-            else allAttempts.push({ model, endpoint, status, error: "Empty candidates" });
+            else allAttempts.push({ model, endpoint, status, error: "Empty result" });
 
           } catch (err) { 
             allAttempts.push({ model, endpoint, status: 'EXC', error: err.message });
@@ -185,7 +180,7 @@ serve(async (req: Request) => {
     }
 
     if (!aiText) {
-      throw new Error(`AI Engines Exhausted. Attempted ${allAttempts.length} combinations. Top Error: ${JSON.stringify(allAttempts[0])}`);
+      throw new Error(`AI Engines Exhausted. Attempted ${allAttempts.length} variations. Top Fail: ${JSON.stringify(allAttempts[0])}`);
     }
 
     if (sessionId) {
@@ -194,7 +189,7 @@ serve(async (req: Request) => {
         session_id: sessionId, 
         role: 'assistant', 
         content: aiText,
-        metadata: { engine: 'stabilizer-v10.7' }
+        metadata: { engine: 'stabilizer-v10.8' }
       });
       await adminClient.rpc('decrement_credits', { user_id: user.id });
     }
