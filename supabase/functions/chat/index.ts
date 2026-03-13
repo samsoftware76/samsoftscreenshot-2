@@ -31,14 +31,18 @@ serve(async (req: Request) => {
     const keysToCheck = ['GEMINI_API_KEY', 'GEMINI_KEY_2', 'GEMINI_KEY_3', 'GOOGLEAI_API_KEY'];
     const diagnostics: any = {};
     keysToCheck.forEach(k => { diagnostics[k] = !!Deno.env.get(k); });
-    const apiKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
+    
+    // v10.6: Deduplicate keys to avoid wasting quota on identical keys
+    const rawKeys = keysToCheck.map(k => Deno.env.get(k)).filter(Boolean);
+    const apiKeys = [...new Set(rawKeys)];
 
-    // --- Action: Ping (v10.3) ---
+    // --- Action: Ping (v10.6) ---
     if (action === 'ping') {
       return new Response(JSON.stringify({ 
         status: 'ok', 
-        version: '10.3', 
-        diagnostics 
+        version: '10.6', 
+        diagnostics,
+        uniqueKeys: apiKeys.length
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -92,11 +96,14 @@ serve(async (req: Request) => {
     }
 
     // --- Action: Chat (AI Logic) ---
-    // v10.5 RELIABILITY: Prioritize 1.5-Flash (stable) over 2.0-Flash (strict limits)
+    // v10.6: Expanded model list for maximum reach
     const models = [
       'gemini-1.5-flash', 
-      'gemini-1.5-flash-8b', 
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash-002',
+      'gemini-1.5-flash-8b',
       'gemini-2.0-flash', 
+      'gemini-pro',
       'gemini-pro-latest',
       'gemini-1.5-pro'
     ];
@@ -138,25 +145,25 @@ serve(async (req: Request) => {
             const status = res.status;
             if (!res.ok) {
               const errTxt = await res.text();
-              console.error(`[FAIL v10.5] ${model}@${endpoint}: Status ${status}`);
-              allAttempts.push({ model, endpoint, status, error: errTxt.substring(0, 500) });
+              console.error(`[FAIL v10.6] ${model}@${endpoint}: Status ${status}`);
+              allAttempts.push({ model, endpoint, status, error: errTxt.substring(0, 100) });
               continue;
             }
 
             const d = await res.json();
             aiText = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (aiText) break;
-            else allAttempts.push({ model, endpoint, status, error: "No text in response candidates" });
+            else allAttempts.push({ model, endpoint, status, error: "No text candidates" });
 
           } catch (err) { 
-            allAttempts.push({ model, endpoint, status: 'EXCEPTION', error: err.message });
+            allAttempts.push({ model, endpoint, status: 'EXC', error: err.message });
           }
         }
       }
     }
 
     if (!aiText) {
-      throw new Error(`AI Engines Exhausted (Quota Likely Hit). Attempted ${allAttempts.length} combinations: ${JSON.stringify(allAttempts)}`);
+      throw new Error(`AI Engines Exhausted. Attempted ${allAttempts.length} combinations. Top Error: ${JSON.stringify(allAttempts[0])}`);
     }
 
     if (sessionId) {
