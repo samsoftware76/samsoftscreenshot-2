@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-console.log("[STABILIZER] Edge Function 'chat' module loaded successfully.");
+console.log("[STABILIZER v4.0] Edge Function 'chat' module loaded successfully.");
 
 function getSystemPrompt(mode: string): string {
   if (mode === 'code') return `You are the "Elite Challenge Solver". Provide the COMPLETE WORKING CODE SOLUTION. Detect the language. Format: description, code block, steps, hints, difficulty.`;
@@ -18,7 +18,7 @@ function getSystemPrompt(mode: string): string {
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
-  console.log(`[DEBUG] Received ${req.method} request`);
+  console.log(`[DEBUG v4.0] Received ${req.method} request`);
 
   try {
     const authHeader = req.headers.get('Authorization');
@@ -51,7 +51,7 @@ serve(async (req: Request) => {
     }
 
     const { action, messages, mode, sessionId, title, cursor, limit = 20 } = body;
-    console.log(`[DEBUG] Action: ${action || 'default-chat'}`);
+    console.log(`[DEBUG v4.0] Action: ${action || 'default-chat'}`);
 
     // ACTION: PING (With Logic Diagnostic)
     if (action === 'ping') {
@@ -65,6 +65,7 @@ serve(async (req: Request) => {
       return new Response(JSON.stringify({ 
         status: 'ok', 
         user: user.id,
+        version: '4.0',
         diagnostics: report 
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -176,11 +177,11 @@ serve(async (req: Request) => {
           try {
             if (endpoint === 'v1' && model === 'gemini-1.0-pro') continue;
 
-            console.log(`[DEBUG] Sync Attempt: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
+            console.log(`[DEBUG v4.0] Attempting: ${endpoint} | ${model} | Key #${keyIdx + 1}`);
             
             const systemPrompt = getSystemPrompt(mode || 'general');
-            // Strict check: Only use system_instruction on v1beta
-            const useSystemField = (model.includes('1.5') || model.includes('2.0')) && endpoint === 'v1beta';
+            // STRICT FIX: V1 endpoint NEVER supports system_instruction field
+            const useSystemField = endpoint === 'v1beta' && (model.includes('1.5') || model.includes('2.0'));
             
             const payload: any = {
               contents: messages.map((m: any, i: number) => {
